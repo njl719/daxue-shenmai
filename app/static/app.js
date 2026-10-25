@@ -212,7 +212,7 @@ ROUTES.home = async () => {
   <section class="hero">
     <div class="hero-badge"><span class="dot"></span>${esc(goals.institution || "目标院校待设定")} · ${phase ? esc(phase.phase) + " · 距考试 " + phase.days_left + " 天" : "备考阶段未设(确认考试日期后自动划分)"}</div>
     <h1>${due ? "今天有 <span class='h1-accent'>" + due + " 项</span>到期待复测" : "今天适合推进薄弱专项"}</h1>
-    <p class="hero-desc">${motivation.quote.text}
+    <p class="hero-desc"><span id="hero-quote">${motivation.quote.text}</span>
       ${motivation.growth_note ? "<br><span style='color:#E5C88F'>🏆 " + esc(motivation.growth_note) + "</span>" : ""}</p>
     <div class="hero-actions">
       <a class="hero-cta" href="#study/train">🎯 每日训练(20 题)
@@ -282,6 +282,9 @@ ROUTES.home = async () => {
       <div class="act">${esc(w.recommended_action || "")}</div></div>`;
   }).join("") : '<span class="muted">暂无判断 —— 录入错题并复测后,系统基于证据给出薄弱点,不凭空贴标签。</span>';
   html += `</div></div>
+  <section class="radar-zone" id="home-radar"><div class="section-label">RADAR · 今日考研雷达</div>
+    <div class="muted" style="margin:8px 0 14px">近期真实考研动态 + 基于你真实学习记录的行动建议。内容来自公开检索与官方公告,每条带来源与时间;<a href="#intel/hot">进入热点雷达 →</a></div>
+    <div class="radar-grid" id="radar-cards"><div class="muted">雷达加载中…</div></div></section>
   <div class="row2">
   <div class="card"><h2>🕘 最近学习记录</h2><div id="home-recent">加载中…</div></div>
   <div class="card"><h2>📊 本周学习趋势</h2>${weekTrend(prof.trend_14d || [])}
@@ -293,6 +296,7 @@ ROUTES.home = async () => {
     <a href='#profile'>完整画像 →</a> <a href='#growth'>成长时间线 →</a></div></div>`;
   $("#view").innerHTML = html;
   typeset($("#view"));
+  renderHomeRadar();
   $("#home-gen").onclick = async () => {
     await api("/plan/generate", { method: "POST", body: { date: todayStr() } });
     toast("已生成"); ROUTES.home();
@@ -1589,7 +1593,7 @@ async function renderMilestones(host) {
 let intelTab = "search";
 ROUTES.intel = async (sub) => {
   if (sub) intelTab = sub;
-  const names = { search: "搜索", sources: "来源清单", schools: "梦校与目标", exp: "经验与方法", quality: "数据质量" };
+  const names = { hot: "热点雷达", search: "搜索", sources: "来源清单", schools: "梦校与目标", exp: "经验与方法", quality: "数据质量" };
   let html = `<div class="page-head"><div>
     <div class="section-label">INTELLIGENCE</div><h1>考研情报站</h1></div></div>
   <div class="tabs">${Object.entries(names).map(([k, n]) =>
@@ -1602,8 +1606,263 @@ ROUTES.intel = async (sub) => {
   else if (intelTab === "sources") await renderSources(body);
   else if (intelTab === "exp") await renderExperience(body);
   else if (intelTab === "quality") await renderQuality(body);
+  else if (intelTab === "hot") await renderHot(body);
   else await renderSchools(body);
 };
+
+/* ================= 热点雷达(V3.1) ================= */
+const RADAR_CTYPES = { hot: "A·近期热点", exp: "B·真实经验", method: "C·学习方法",
+  policy: "D·招生政策", mindset: "E·情绪压力", ai: "F·AI原创", warn: "G·警惕营销", expired: "H·已过期" };
+const VERIFY_LABEL = { verified_page: "已核验原文", snippet_only: "仅摘要·日期未核验", user_submitted: "用户提交·待核验" };
+
+async function renderHot(host) {
+  const q = new URLSearchParams(location.hash.split("?")[1] || "");
+  let bucket = q.get("bucket") || "7";
+  let ctype = q.get("ctype") || "";
+  host.innerHTML = `<div class="infobox" id="hot-status">加载中…</div>
+    <div class="toolbar" style="flex-wrap:wrap;gap:8px">
+      <select id="hot-bucket">${["7", "30", "90", "all"].map(b =>
+        `<option value="${b}" ${bucket === b ? "selected" : ""}>${{ "7": "最近 7 天", "30": "最近 30 天", "90": "最近 90 天", all: "全部" }[b]}</option>`).join("")}</select>
+      <select id="hot-ctype"><option value="">全部类型</option>${Object.entries(RADAR_CTYPES).map(([k, n]) =>
+        `<option value="${k}" ${ctype === k ? "selected" : ""}>${n}</option>`).join("")}</select>
+      <button class="primary" id="hot-refresh">⟳ 刷新近期热点</button>
+      <button id="hot-submit">＋ 提交链接</button>
+      <button id="hot-fav">★ 收藏</button>
+      <button id="hot-cfg">⚙ 数据源</button>
+    </div>
+    <div id="hot-list"></div>`;
+  $("#hot-bucket").onchange = e => { bucket = e.target.value; loadList(); };
+  $("#hot-ctype").onchange = e => { ctype = e.target.value; loadList(); };
+  $("#hot-refresh").onclick = doRefresh;
+  $("#hot-submit").onclick = submitModal;
+  $("#hot-fav").onclick = () => { location.hash = "#intel/hot?bucket=all"; bucket = "all"; ctype = ""; loadList("favorite=1"); };
+  $("#hot-cfg").onclick = cfgModal;
+
+  async function loadList(extra) {
+    const p = new URLSearchParams();
+    if (bucket !== "all" && !extra) p.set("bucket", bucket);
+    if (ctype) p.set("ctype", ctype);
+    if (extra) extra.split("&").forEach(kv => { const [k2, v2] = kv.split("="); if (v2) p.set(k2, v2); });
+    const d = await api("/radar?" + p.toString());
+    const st = d.status || {};
+    $("#hot-status").innerHTML = `
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+        <span class="sysdot ok"></span>上次成功检索:${st.last_success ? esc(st.last_success.replace("T", " ")) : "从未"}
+        ${st.failure_reason ? `<span class="tag red">上次失败:${esc(st.failure_reason)}</span>` : ""}
+      </div>
+      <div class="muted" style="margin-top:6px;font-size:12px">
+        通道:DuckDuckGo 公开搜索 + 研招网官方列表 + 用户提交链接。抖音/小红书无公开检索接口,不做自动抓取(不绕过登录/反爬),可用「提交链接」收录公开内容。
+        ${st.last_stats ? `上次:查询 ${st.last_stats.queried} 组·候选 ${st.last_stats.candidates}·新增 ${st.last_stats.added}·重复 ${st.last_stats.duplicates}·过滤 ${st.last_stats.rejected}` : ""}</div>`;
+    $("#hot-list").innerHTML = d.items.length ? d.items.map(itemCard).join("")
+      : `<div class="card"><div class="muted" style="padding:20px;text-align:center">
+          ${bucket === "7" ? "最近 7 天暂无已核验发布时间的内容。可放宽到 30 天,或点击「刷新近期热点」检索。" : "暂无内容,点击「刷新近期热点」开始第一次检索。"}</div></div>`;
+    $$(".hot-item").forEach(card => {
+      const it = d.items.find(x => x.id === card.dataset.id);
+      if (it) card._url = it.url;
+    });
+    bindCards();
+  }
+
+  async function doRefresh() {
+    const btn = $("#hot-refresh");
+    btn.disabled = true; btn.textContent = "检索中…(最长约 90 秒,勿关页面)";
+    try {
+      const r = await api("/radar/refresh", { method: "POST" });
+      const s = r.stats;
+      toast(r.ok ? `检索完成:新增 ${s.added} 条(7天内 ${s.bucket_7d},30天 ${s.bucket_30d},90天 ${s.bucket_90d})`
+        : "检索失败:" + (r.failure_reason || "网络不可用"), r.ok ? "ok" : "err");
+      if (!r.ok) toast("已保留上次成功的数据,不会显示伪造热点", "err");
+    } catch (e) { toast("刷新失败:" + e.message, "err"); }
+    btn.disabled = false; btn.textContent = "⟳ 刷新近期热点";
+    loadList();
+  }
+
+  function itemCard(i) {
+    const sc = (i.score || {}).total ?? "—";
+    const dateBadges = [
+      i.published_at ? `发布 ${esc(i.published_at)}` : "发布时间未核验",
+      VERIFY_LABEL[i.verify_status] || i.verify_status,
+      i.ctype === "warn" ? '<span class="tag red">营销嫌疑·仅供警惕</span>' : ""
+    ].filter(Boolean).map(t => `<span class="tag ${i.published_at ? "gray" : "amber"}">${t}</span>`).join(" ");
+    return `<div class="card hot-item" data-id="${i.id}" style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+        <b style="cursor:pointer" class="hot-title">${esc(i.title)}</b>
+        <span class="score-pill" title="${esc((i.score || {}).rationale || "")}">${sc}<small>/100</small></span>
+      </div>
+      <div class="muted" style="font-size:13px;margin:6px 0">${esc(i.summary || "(无摘要)")}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+        <span class="tag blue">${RADAR_CTYPES[i.ctype] || i.ctype}</span>
+        <span class="tag gray">${esc(i.platform)}</span>
+        ${i.subject && i.subject !== "general" ? `<span class="tag gray">${SUBJECTS[i.subject] || i.subject}</span>` : ""}
+        ${dateBadges}</div>
+      <div class="hot-actions">
+        <button data-act="open" class="btn">原文 ↗</button>
+        <button data-act="useful">👍 有用</button>
+        <button data-act="not_useful">👎 没帮助</button>
+        <button data-act="practiced">✅ 已实践</button>
+        <button data-act="favorite">${i.favorite ? "★ 已藏" : "☆ 收藏"}</button>
+        <button data-act="hide">🚫 隐藏</button>
+        <button data-act="dislike_type" title="降低此类内容的推荐权重">不再推荐此类</button>
+        <button data-act="reverify">核验</button>
+      </div>
+      ${(i.feedback && (i.feedback.useful || i.feedback.not_useful || i.feedback.practiced)) ?
+        `<div class="muted" style="font-size:12px;margin-top:6px">反馈:👍${i.feedback.useful || 0} 👎${i.feedback.not_useful || 0}${i.feedback.practiced ? " · 已实践(欢迎回头记录效果)" : ""}</div>` : ""}
+    </div>`;
+  }
+
+  function bindCards() {
+    $$(".hot-item").forEach(card => {
+      const id = card.dataset.id;
+      card.querySelector(".hot-title").onclick = () => { if (card._url) window.open(card._url, "_blank"); };
+      card.querySelectorAll("button[data-act]").forEach(b => {
+        if (b.dataset.act === "open") {
+          b.onclick = () => { if (card._url) window.open(card._url, "_blank"); };
+          return;
+        }
+        b.onclick = async () => {
+          const act = b.dataset.act;
+          if (act === "reverify") {
+            b.disabled = true; b.textContent = "核验中…";
+            try { const r = await api("/radar/reverify", { method: "POST", body: JSON.stringify({ id }) });
+              toast(r.message, r.ok ? "ok" : "err"); loadList(); } catch (e) { toast(e.message, "err"); b.disabled = false; b.textContent = "核验"; }
+            return;
+          }
+          try { await api("/radar/feedback", { method: "POST", body: JSON.stringify({ id, action: act }) });
+            toast("已记录,会影响后续推荐", "ok"); loadList(); } catch (e) { toast(e.message, "err"); }
+        };
+      });
+    });
+  }
+
+  function submitModal() {
+    openModal(`<h2>提交公开内容链接</h2>
+      <p class="muted" style="font-size:13px">适用于抖音/小红书/公众号等你看到的公开考研内容。系统只存链接与你的备注,不抓取登录内容。</p>
+      <div><label>链接 *</label><input id="hs-url" placeholder="https://..."></div>
+      <div><label>标题 *</label><input id="hs-title" placeholder="内容标题"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div><label>平台</label><select id="hs-plat">${["自动识别", "抖音", "小红书", "B站", "知乎", "微信公众号", "微博", "其他"].map(p2 => `<option>${p2}</option>`).join("")}</select></div>
+        <div><label>发布日期(选填)</label><input id="hs-date" placeholder="2026-10-20"></div></div>
+      <div><label>备注(为什么值得关注)</label><textarea id="hs-note" rows="3"></textarea></div>
+      <button class="primary" id="hs-go">提交</button>`);
+    $("#hs-go").onclick = async () => {
+      try {
+        await api("/radar/submit", { method: "POST", body: JSON.stringify({
+          url: $("#hs-url").value, title: $("#hs-title").value,
+          platform: $("#hs-plat").value === "自动识别" ? "" : $("#hs-plat").value,
+          published_at: $("#hs-date").value, note: $("#hs-note").value }) });
+        toast("已入库(标记为用户提交·待核验)", "ok"); closeModal(); loadList();
+      } catch (e) { toast(e.message, "err"); }
+    };
+  }
+
+  function cfgModal() {
+    api("/radar/settings").then(cfg => {
+      openModal(`<h2>数据源与设置</h2>
+        <div class="infobox">实际通道:${cfg.channels.map(esc).join("；")}。<br>限制:${esc(cfg.limits)}。</div>
+        <div><label>HTTP 代理(检索通道用,留空=直连)</label><input id="hc-proxy" value="${esc(cfg.proxy || "")}" placeholder="http://127.0.0.1:7897"></div>
+        <div><label>每次检索关键词组数(1-12)</label><input id="hc-n" type="number" min="1" max="12" value="${cfg.max_queries}"></div>
+        <label style="display:flex;gap:8px;align-items:center;margin:10px 0"><input type="checkbox" id="hc-auto" ${cfg.auto_refresh ? "checked" : ""}> 定时自动刷新(每 6 小时,需本机服务常驻;默认关闭)</label>
+        <button class="primary" id="hc-go">保存</button>`);
+      $("#hc-go").onclick = async () => {
+        try { await api("/radar/settings", { method: "POST", body: JSON.stringify({
+            proxy: $("#hc-proxy").value, max_queries: $("#hc-n").value, auto_refresh: $("#hc-auto").checked }) });
+          toast("已保存", "ok"); closeModal(); } catch (e) { toast(e.message, "err"); }
+      };
+    });
+  }
+
+  await loadList();
+}
+
+async function renderHomeRadar() {
+  const host = $("#radar-cards");
+  if (!host) return;
+  let d;
+  try { d = await api("/radar/home"); } catch (e) { host.innerHTML = `<div class="muted">雷达暂不可用:${esc(e.message)}</div>`; return; }
+  const b = d.brief || {}, snap = d.snapshot || {}, obs = d.observation || {},
+    top = d.top || { items: [], note: "" }, bd = d.breakdown, st = d.status || {};
+  const genBadge = b.generator === "ai"
+    ? `<span class="tag blue">AI 改写(${esc(b.model || "")})·事实来自真实数据</span>`
+    : '<span class="tag gray">规则引擎·基于真实学习数据</span>';
+  const foundBlock = b.found
+    ? `<a href="${esc(b.found.url)}" target="_blank" rel="noopener">${esc(b.found.title)}</a>
+       <span class="tag gray" style="margin-left:6px">${esc(b.found.platform)}${b.found.published_at ? " · " + esc(b.found.published_at) : " · 日期未核验"} · 评分 ${b.found.score}</span>`
+    : `<span class="muted">${esc(b.found_note || "近期无匹配内容")}</span>`;
+  const bf = b.feedback || {};
+  const briefCard = `
+    <div class="card radar-card radar-brief">
+      <h2>⚡ 今日行动建议${b.need ? `<span class="tag amber" style="margin-left:6px">${{baseline:"建立基线",shrink:"缩小任务",math_method:"数学方法",english_method:"英语方法",cs408_method:"408方法",advanced:"上强度",maintain:"保持节奏",restart:"重启恢复"}[b.need] || b.need}</span>` : ""}</h2>
+      <div class="bf-row"><span class="bf-key">近期发现</span><div>${foundBlock}</div></div>
+      <div class="bf-row"><span class="bf-key">为什么与你有关</span><div>${esc(b.why || "")}</div></div>
+      <div class="bf-row"><span class="bf-key">今天能做什么</span><div class="bf-act">${esc(b.action || "")}</div></div>
+      <div class="bf-row"><span class="bf-key">复盘指标</span><div class="muted">${esc(b.metric || "")}</div></div>
+      <div class="hot-actions" style="margin-top:10px">
+        <button id="bf-useful">👍 有用${bf.useful ? " " + bf.useful : ""}</button>
+        <button id="bf-notuseful">👎 没帮助${bf.not_useful ? " " + bf.not_useful : ""}</button>
+        <button id="bf-practiced">✅ 已实践</button>
+        <button id="bf-regen">↻ 换一条</button></div>
+      <div style="margin-top:8px">${genBadge}</div>
+    </div>`;
+  const topCard = `
+    <div class="card radar-card">
+      <h2>📡 今日考研雷达 <span class="muted" style="font-size:12px;font-weight:400">(${esc(top.note)})</span></h2>
+      ${top.items.length ? top.items.slice(0, 5).map(i => `
+        <div class="radar-li">
+          <a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.title)}</a>
+          <div class="muted" style="font-size:12px">${esc(i.platform)} · ${i.published_at ? "发布 " + esc(i.published_at) : "日期未核验"} · ${esc(RADAR_CTYPES[i.ctype] || i.ctype)} · 评分 ${((i.score || {}).total ?? "—")}</div>
+        </div>`).join("")
+      : `<div class="muted">还没有内容。${st.last_success ? "上次检索 " + esc(st.last_success.slice(0, 16).replace("T", " ")): "从未检索过"} → <a href="#intel/hot">去刷新</a></div>`}
+    </div>`;
+  const bdCard = bd ? `
+    <div class="card radar-card">
+      <h2>🔍 今日经验拆解</h2>
+      <a href="${esc(bd.item.url)}" target="_blank" rel="noopener"><b>${esc(bd.item.title)}</b></a>
+      <span class="tag gray" style="margin-left:6px">${esc(bd.item.platform)} · ${bd.item.published_at ? esc(bd.item.published_at) : "日期未核验"}</span>
+      <div class="bf-row" style="margin-top:8px"><span class="bf-key">适用条件</span><div>${esc(bd.conditions)}</div></div>
+      <div class="bf-row"><span class="bf-key">操作步骤</span><div>${esc(bd.steps)}</div></div>
+      <div class="bf-row"><span class="bf-key">潜在局限</span><div class="muted">${esc(bd.limits)}</div></div>
+      ${bd.generator === "ai" ? '<span class="tag blue">AI 按原文摘要提炼</span>' : '<span class="tag gray">规则拆解</span>'}
+    </div>`
+    : `<div class="card radar-card"><h2>🔍 今日经验拆解</h2><div class="muted">暂无可拆解的经验内容,先去 <a href="#intel/hot">刷新热点</a>。</div></div>`;
+  const obsCard = `
+    <div class="card radar-card">
+      <h2>📈 本周备考观察</h2>
+      ${(obs.topics || []).length ? obs.topics.map(t =>
+        `<span class="tag blue">${esc(t.tag)} ×${t.count}</span>`).join(" ")
+      : '<span class="muted">近 14 天暂无入库内容</span>'}
+      ${(obs.my_tags || []).length ? `<div style="margin-top:8px;font-size:13px">你的高频错题标签:${obs.my_tags.map(([k, n]) =>
+        `<span class="tag amber">${esc(k)} ×${n}</span>`).join(" ")}</div>` : ""}
+      <div class="muted" style="font-size:12px;margin-top:8px">${esc((obs.sample || {}).note || "")}</div>
+    </div>`;
+  const t = snap.today || {}, w = snap.week || {};
+  const meCard = `
+    <div class="card radar-card">
+      <h2>🧭 我的备考状态</h2>
+      <div class="me-grid">
+        <div><b>${t.done}/${t.total || 20}</b><span>今日训练</span></div>
+        <div><b>${w.acc == null ? "—" : w.acc + "%"}</b><span>近7天正确率(${w.total || 0}题)</span></div>
+        <div><b>${w.active_days || 0}</b><span>近7天活跃</span></div>
+        <div><b>${snap.due_today || 0}</b><span>今日到期复测</span></div>
+      </div>
+      ${snap.has_records ? "" : '<div class="muted" style="margin-top:8px">学习记录不足,系统不会假装了解你的状态 —— 完成第一组训练后这里会变成真实数据。</div>'}
+    </div>`;
+  host.innerHTML = briefCard + topCard + bdCard + obsCard + meCard;
+  // 语录降级为兜底:有真实行动建议时替换 hero 顶部文案
+  const hq = $("#hero-quote");
+  if (hq && b.action) hq.innerHTML = "⚡ " + esc(b.action) +
+    ' <a href="#intel/hot" style="font-size:13px;white-space:nowrap">依据与来源 →</a>';
+  const fb = async act => {
+    try { await api("/radar/brief/feedback", { method: "POST", body: JSON.stringify({ action: act }) });
+      toast("已记录,会影响后续建议", "ok"); } catch (e) { toast(e.message, "err"); }
+  };
+  $("#bf-useful").onclick = () => fb("useful");
+  $("#bf-notuseful").onclick = () => fb("not_useful");
+  $("#bf-practiced").onclick = () => fb("practiced");
+  $("#bf-regen").onclick = async () => {
+    try { await api("/radar/brief/regenerate", { method: "POST" }); renderHomeRadar(); }
+    catch (e) { toast(e.message, "err"); }
+  };
+}
 
 async function renderSearch(host) {
   let html = `<div class="infobox">搜索 GitHub 公开仓库(招生政策请以官方公告为准;AI 摘要不能替代原文)。</div>

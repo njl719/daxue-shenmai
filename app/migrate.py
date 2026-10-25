@@ -15,7 +15,7 @@ import os
 from .storage import Store
 
 MIGRATIONS = []
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 POLITICS_TRACK = {
     "name": "思想政治理论(101)", "subject": "politics",
@@ -109,6 +109,19 @@ def _v4_to_v5(store):
     from . import questionseed as QS
     added = QS.seed_original_questions(store)
     return "v4→v5 完成:原创题入库 %d 题" % added
+
+
+@migration(5)
+def _v5_to_v6(store):
+    """v5→v6:热点雷达集合(内容库+轮换状态),默认代理指向本机 Clash,可改。"""
+    from . import radar
+    if not store.load("radar_state"):
+        store.save("radar_state", radar.default_state())
+    settings = store.load("settings")
+    if "radar" not in settings:
+        settings["radar"] = {"proxy": "http://127.0.0.1:7897", "max_queries": 6}
+        store.save("settings", settings)
+    return "v5→v6 完成:热点雷达数据层初始化"
 
 
 def run_migrations(store):

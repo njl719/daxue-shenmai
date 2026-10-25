@@ -32,6 +32,8 @@ COLLECTIONS = {
     "train": dict,
     "train_state": dict,
     "experience_posts": list,
+    "radar": list,
+    "radar_state": dict,
 }
 
 

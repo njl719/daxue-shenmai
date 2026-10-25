@@ -1,5 +1,5 @@
 /* 大雪深埋 Service Worker:静态资源缓存,API 始终走网络(数据在服务端) */
-const CACHE = "daxue-v3";
+const CACHE = "daxue-v4";
 const ASSETS = [
   "/", "/static/style.css", "/static/app.js",
   "/static/vendor/katex/katex.min.css", "/static/vendor/katex/katex.min.js",

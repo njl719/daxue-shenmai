@@ -1681,6 +1681,262 @@ def create_app(data_dir=None, backup_dir=None):
         store.save("motivations", remain)
         return jsonify({"deleted": mid})
 
+    # ---------- 热点雷达(V3.1) ----------
+    from . import radar as RADAR
+
+    def _radar_bucket(items, days):
+        cutoff = (_today() - datetime.timedelta(days=days)).isoformat()
+        out = [i for i in items
+               if i.get("published_at") and i["published_at"] >= cutoff
+               and i.get("verify_status") in ("verified_page", "user_submitted")]
+        return out
+
+    @app.get("/api/radar")
+    def radar_list():
+        args = request.args
+        items = [i for i in store.load("radar") if not i.get("hidden")]
+        RADAR.expire_pass(store)
+        bucket = args.get("bucket", "all")
+        if bucket in ("7", "30", "90"):
+            items = _radar_bucket(items, int(bucket))
+        if args.get("ctype"):
+            items = [i for i in items if i.get("ctype") == args["ctype"]]
+        if args.get("subject"):
+            items = [i for i in items if i.get("subject") == args["subject"]]
+        if args.get("favorite") == "1":
+            items = [i for i in items if i.get("favorite")]
+        items.sort(key=lambda i: (-(i.get("score") or {}).get("total", 0),
+                                  i.get("fetched_at") or ""), reverse=False)
+        state = store.load("radar_state") or {}
+        return jsonify({"items": items[:200], "total": len(items),
+                        "ctypes": RADAR.CTYPES,
+                        "status": {"last_success": state.get("last_success"),
+                                   "last_attempt": state.get("last_attempt"),
+                                   "last_stats": state.get("last_stats"),
+                                   "failure_reason": state.get("failure_reason")}})
+
+    @app.post("/api/radar/refresh")
+    def radar_refresh():
+        stats = RADAR.refresh(store, store.load("settings"))
+        RADAR.expire_pass(store)
+        return jsonify({"ok": not (stats["failed"] and not stats["candidates"]),
+                        "stats": stats,
+                        "failure_reason": (store.load("radar_state") or {}).get("failure_reason")})
+
+    @app.post("/api/radar/feedback")
+    def radar_feedback():
+        body = request.get_json(force=True, silent=True) or {}
+        rid, action = body.get("id"), body.get("action")
+        if not rid or action not in ("useful", "not_useful", "practiced",
+                                     "favorite", "unfavorite", "hide", "dislike_type"):
+            return _bad("参数不合法")
+        items = store.load("radar")
+        state = store.load("radar_state") or RADAR.default_state()
+        state.setdefault("ctype_weights", {})
+        hit = next((i for i in items if i["id"] == rid), None)
+        if not hit:
+            return _bad("内容不存在"), 404
+        fb = hit.setdefault("feedback", {"useful": 0, "not_useful": 0,
+                                         "practiced": False, "dislike_type": False})
+        if action == "useful":
+            fb["useful"] += 1
+        elif action == "not_useful":
+            fb["not_useful"] += 1
+            if hit["ctype"] == "ai":  # 鸡汤负反馈:AI 原创降权
+                state["ctype_weights"]["ai"] = max(-3, state["ctype_weights"].get("ai", 0) - 1)
+        elif action == "practiced":
+            fb["practiced"] = True
+        elif action == "favorite":
+            hit["favorite"] = True
+        elif action == "unfavorite":
+            hit["favorite"] = False
+        elif action == "hide":
+            hit["hidden"] = True
+        elif action == "dislike_type":
+            fb["dislike_type"] = True
+            state["ctype_weights"][hit["ctype"]] = \
+                max(-3, state["ctype_weights"].get(hit["ctype"], 0) - 1)
+        store.save("radar", items)
+        store.save("radar_state", state)
+        return jsonify({"ok": True, "feedback": fb, "hidden": hit.get("hidden", False),
+                        "favorite": hit.get("favorite", False)})
+
+    @app.post("/api/radar/submit")
+    def radar_submit():
+        body = request.get_json(force=True, silent=True) or {}
+        url = (body.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            return _bad("请粘贴完整公开链接(http/https)")
+        title = (body.get("title") or "").strip()
+        if len(title) < 4:
+            return _bad("请填写标题(便于识别与去重)")
+        items = store.load("radar")
+        h = RADAR.dedup_hash(url, title)
+        if any(i.get("dedup_hash") == h for i in items):
+            return _bad("这条内容已在库中(去重命中)")
+        settings = store.load("settings")
+        goals = store.load("goals") or {}
+        state = store.load("radar_state") or RADAR.default_state()
+        pub = RADAR._norm_date(body.get("published_at") or "")
+        cand = {"title": title[:120], "url": url,
+                "snippet": (body.get("note") or "")[:300]}
+        ctype, hits = RADAR.classify(cand)
+        now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+        item = {
+            "id": "rd-" + h[:12], "title": title[:120],
+            "summary": cand["snippet"], "url": url,
+            "platform": body.get("platform") or RADAR.platform_of(url),
+            "author": body.get("author") or "",
+            "published_at": pub, "fetched_at": now_iso, "verified_at": None,
+            "verify_status": "user_submitted",
+            "subject": RADAR.detect_subject(title + " " + cand["snippet"]),
+            "tags": [], "stage": "通用", "ctype": ctype, "marketing_hits": hits,
+            "heat": None, "score": None, "recommend_reason": "", "action_advice": "",
+            "shown": False, "favorite": bool(body.get("favorite")),
+            "hidden": False,
+            "feedback": {"useful": 0, "not_useful": 0, "practiced": False,
+                         "dislike_type": False},
+            "expires_at": ((_today() + datetime.timedelta(days=90)).isoformat()),
+            "dedup_hash": h,
+            "submitted_by": (g.user if isinstance(g.user, str) else "user"),
+            "via_query": "user_submit",
+            "user_note": (body.get("note") or "")[:300],
+        }
+        item["score"] = RADAR.score_item(
+            item, {"subjects": ["math", "cs408", "english", "politics"],
+                   "target_school": goals.get("institution") or "",
+                   "stage": RADAR.stage_of(), "ctype_weights": state.get("ctype_weights") or {}},
+            [i.get("title", "") for i in items])
+        items.append(item)
+        store.save("radar", items)
+        return jsonify(item), 201
+
+    @app.post("/api/radar/reverify")
+    def radar_reverify():
+        body = request.get_json(force=True, silent=True) or {}
+        rid = body.get("id")
+        items = store.load("radar")
+        hit = next((i for i in items if i["id"] == rid), None)
+        if not hit:
+            return _bad("内容不存在"), 404
+        proxy = ((store.load("settings").get("radar") or {}).get("proxy")) or None
+        try:
+            page = RADAR.http_text(hit["url"], proxy, timeout=12)
+            d = RADAR.extract_date(page, hit["url"])
+            if d and not hit.get("published_at"):
+                hit["published_at"] = d
+            desc, author = RADAR.extract_meta(page)
+            if desc:
+                hit["summary"] = desc[:300]
+            if author:
+                hit["author"] = author
+            hit["verify_status"] = "verified_page"
+            hit["verified_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            msg = "核验成功,页面可访问"
+        except urllib.error.HTTPError as e:
+            if e.code in (404, 410):
+                hit["ctype"] = "expired"
+                msg = "原链接已失效(%d),标记为过期" % e.code
+            else:
+                msg = "核验失败:HTTP %d(对方站点限制访问)" % e.code
+        except Exception as e:
+            msg = "核验失败:%s" % str(e)[:60]
+        store.save("radar", items)
+        return jsonify({"ok": hit.get("verify_status") == "verified_page",
+                        "message": msg, "item": hit})
+
+    @app.get("/api/radar/home")
+    def radar_home():
+        RADAR.expire_pass(store)
+        state = store.load("radar_state") or RADAR.default_state()
+        card = state.get("daily_card")
+        if not card or card.get("date") != _today().isoformat():
+            card = RADAR.build_daily_brief(store, store.load("settings"))
+            state = store.load("radar_state") or {}
+        items = [i for i in store.load("radar")
+                 if not i.get("hidden") and i["ctype"] not in ("warn", "expired")]
+        top, bucket_used, note = [], "none", "尚未检索到内容,点击刷新开始第一次检索"
+        for days, label in ((7, "7d"), (30, "30d"), (90, "90d")):
+            got = _radar_bucket(items, days)
+            got.sort(key=lambda i: -(i.get("score") or {}).get("total", 0))
+            if len(got) >= 3 or (label == "90d" and got):
+                top, bucket_used = got[:6], label
+                note = ("最近 7 天内容" if label == "7d" else
+                        "近 7 天内容不足,已放宽到 %s 天(注意实际发布时间)" % days)
+                break
+        settings = store.load("settings")
+        return jsonify({
+            "brief": card,
+            "top": {"items": top, "bucket": bucket_used, "note": note},
+            "breakdown": RADAR.experience_breakdown(store, settings),
+            "observation": RADAR.weekly_observation(store),
+            "snapshot": RADAR.user_snapshot(store, settings),
+            "status": {"last_success": state.get("last_success"),
+                       "last_attempt": state.get("last_attempt"),
+                       "failure_reason": state.get("failure_reason"),
+                       "total": len(store.load("radar"))}})
+
+    @app.post("/api/radar/brief/regenerate")
+    def radar_brief_regen():
+        card = RADAR.build_daily_brief(store, store.load("settings"), force=True)
+        return jsonify(card)
+
+    @app.post("/api/radar/brief/feedback")
+    def radar_brief_feedback():
+        body = request.get_json(force=True, silent=True) or {}
+        action = body.get("action")
+        if action not in ("useful", "not_useful", "practiced"):
+            return _bad("参数不合法")
+        state = store.load("radar_state") or RADAR.default_state()
+        card = state.get("daily_card") or {}
+        fb = card.setdefault("feedback", {"useful": 0, "not_useful": 0, "practiced": False})
+        if action == "useful":
+            fb["useful"] += 1
+        elif action == "not_useful":
+            fb["not_useful"] += 1
+            if card.get("generator") == "ai":  # 对 AI 文案不满 → 降 AI 权重
+                w = state.setdefault("ctype_weights", {})
+                w["ai"] = max(-3, w.get("ai", 0) - 1)
+        else:
+            fb["practiced"] = True
+        state["daily_card"] = card
+        store.save("radar_state", state)
+        return jsonify({"ok": True, "feedback": fb})
+
+    @app.get("/api/radar/settings")
+    def radar_settings_get():
+        cfg = store.load("settings").get("radar") or {}
+        return jsonify({"proxy": cfg.get("proxy", "http://127.0.0.1:7897"),
+                        "max_queries": int(cfg.get("max_queries", 6)),
+                        "auto_refresh": bool(cfg.get("auto_refresh", False)),
+                        "channels": ["DuckDuckGo 公开搜索", "研招网官方列表",
+                                     "用户提交链接(抖音/小红书等仅此通道)"],
+                        "limits": "抖音/小红书无公开检索接口,不支持自动抓取,也不绕过其登录/反爬限制"})
+
+    @app.post("/api/radar/settings")
+    def radar_settings_post():
+        body = request.get_json(force=True, silent=True) or {}
+        settings = store.load("settings")
+        cfg = settings.get("radar") or {}
+        if "proxy" in body:
+            p = (body["proxy"] or "").strip()
+            if p and not p.startswith("http://") and not p.startswith("https://"):
+                return _bad("代理地址需以 http:// 开头,留空表示直连")
+            cfg["proxy"] = p or None
+        if "max_queries" in body:
+            try:
+                n = int(body["max_queries"])
+            except (TypeError, ValueError):
+                return _bad("检索次数须为数字")
+            if not 1 <= n <= 12:
+                return _bad("检索次数范围 1-12")
+            cfg["max_queries"] = n
+        if "auto_refresh" in body:
+            cfg["auto_refresh"] = bool(body["auto_refresh"])
+        settings["radar"] = cfg
+        store.save("settings", settings)
+        return jsonify({"ok": True, "radar": cfg})
+
     # ---------- 成长时间线 ----------
     @app.get("/api/growth/timeline")
     def growth_timeline():
@@ -2059,6 +2315,12 @@ def main():
     for note in migrate_mod.run_migrations(store):
         print("迁移:", note)
     app, store = create_app()
+    # 热点雷达定时刷新:仅当用户在设置里开启且非测试环境才启动后台线程
+    if (store.load("settings").get("radar") or {}).get("auto_refresh") \
+            and not os.environ.get("PYTEST_CURRENT_TEST"):
+        from . import radar as _RADAR
+        _RADAR.start_auto_thread(store)
+        print("热点雷达:定时自动刷新已开启(每 6 小时)")
     if store.load("settings").get("backup_on_start", True):
         dest = store.backup("startup")
         print("启动备份:", dest)
