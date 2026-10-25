@@ -62,8 +62,8 @@ def test_ai_recognize_without_key_honest(client):
 
 def test_settings_ai_config_masked(client):
     rv = client.put("/api/settings", json={"ai": {
-        "base_url": "https://api.deepseek.com", "model": "deepseek-chat",
-        "api_key": "sk-secret-12345678"}})
+        "mode": "cloud", "base_url": "https://api.deepseek.com",
+        "model": "deepseek-chat", "api_key": "sk-secret-12345678"}})
     assert rv.status_code == 200
     s = client.get("/api/settings").get_json()
     assert s["ai"]["has_key"] is True

@@ -10,8 +10,10 @@ def test_get_ai_config_empty():
 
 def test_get_ai_config_from_settings():
     cfg = ai.get_ai_config({"ai": {
-        "base_url": "https://x/v4", "api_key": "sk-test", "model": "m1"}})
-    assert cfg["available"] is True
+        "mode": "cloud", "base_url": "https://x/v4",
+        "api_key": "sk-test", "model": "m1"}})
+    assert cfg["mode"] == "cloud"
+    assert cfg["available"] is True  # 云端模式不依赖本地 Ollama
     assert cfg["model"] == "m1"
 
 
