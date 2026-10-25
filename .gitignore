@@ -14,6 +14,10 @@ __pycache__/
 tests/*.png
 tests/*_b64.txt
 
+# 公网隧道工具与运行时产物(cloudflared.exe 约 53MB,不入库)
+tools/cloudflared.exe
+tools/public_url.txt
+
 # 系统
 Thumbs.db
 .DS_Store
