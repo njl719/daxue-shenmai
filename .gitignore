@@ -21,3 +21,6 @@ tools/public_url.txt
 # 系统
 Thumbs.db
 .DS_Store
+
+# 调试临时文件
+tools/tmp/
