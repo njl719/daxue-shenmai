@@ -215,8 +215,9 @@ ROUTES.home = async () => {
     <p class="hero-desc">${motivation.quote.text}
       ${motivation.growth_note ? "<br><span style='color:#E5C88F'>🏆 " + esc(motivation.growth_note) + "</span>" : ""}</p>
     <div class="hero-actions">
-      <a class="hero-cta" href="#study/practice">开始刷题(${due})
+      <a class="hero-cta" href="#study/train">🎯 每日训练(20 题)
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 8h10M9 4l4 4-4 4"/></svg></a>
+      <a class="hero-ghost" href="#study/practice">间隔刷题(${due} 到期)</a>
       <a class="hero-ghost" href="#study/mistakes">📷 拍照录错题</a>
       <a class="hero-ghost" href="#coach">与教练反思</a>
     </div>
@@ -340,7 +341,7 @@ function bindTaskButtons(reload) {
 let studyTab = "practice";
 ROUTES.study = async (sub) => {
   if (sub) studyTab = sub;
-  const names = { practice: "间隔刷题", mistakes: "错题本", vocab: "生词", bank: "题库", knowledge: "知识库" };
+  const names = { train: "🎯每日训练", practice: "间隔刷题", mistakes: "错题本", vocab: "生词", bank: "题库", knowledge: "知识库" };
   let html = `<div class="page-head"><div>
     <div class="section-label">STUDY CENTER</div><h1>学习中心</h1></div></div>
   <div class="tabs">${Object.entries(names).map(([k, n]) =>
@@ -349,12 +350,149 @@ ROUTES.study = async (sub) => {
   $("#view").innerHTML = html;
   $$(".tabs button").forEach(b => b.onclick = () => { studyTab = b.dataset.t; ROUTES.study(studyTab); });
   const body = $("#study-body");
-  if (studyTab === "practice") await renderPractice(body);
+  if (studyTab === "train") await renderTrain(body);
+  else if (studyTab === "practice") await renderPractice(body);
   else if (studyTab === "mistakes") await renderMistakes(body);
   else if (studyTab === "vocab") await renderVocab(body);
   else if (studyTab === "bank") await renderBank(body);
   else await renderKnowledge(body);
 };
+
+/* ---- 每日训练(学习中心第一 Tab) ---- */
+async function renderTrain(host) {
+  const t = await api("/train/daily");
+  const items = t.items || [];
+  const totalQ = Object.values(t.quotas).reduce((a, b) => a + b, 0);
+  const shortMsg = Object.entries(t.shortage).map(([s, n]) =>
+    SUBJECTS[s] + " 缺 " + n + " 题").join("、");
+  let html = `<div class="toolbar">
+    <b style="font-size:16px">${esc(t.date)} 每日训练</b>
+    <span class="tag gray">配额 ${Object.entries(t.quotas).filter(([,v])=>v>0).map(([k,v])=>SUBJECTS[k]+" "+v).join(" / ")}</span>
+    <span class="muted">已答 ${t.done}/${items.length}${t.done ? " · 对 " + t.correct : ""}</span>
+    <button id="tr-regen" title="重新抽题(换一批)">↻ 换一批</button>
+    <a class="btn" href="#account">设置题量</a></div>
+  ${shortMsg ? '<div class="hintbox">⚠ 题库不足:' + esc(shortMsg) + ' —— 剩余科目将少于配额,系统不会用重复题凑数。可在「题库」页录入或导入更多题目。</div>' : ""}
+  ${items.length === 0 ? '<div class="card state"><div class="big">🎯</div><b>今日训练清单为空</b><span>所有科目配额为 0 或题库为空。去「设置题量」或「题库」页补充。</span></div>' : '<div id="tr-list"></div>'}`;
+  host.innerHTML = html;
+  typeset(host);
+  $("#tr-regen").onclick = async () => {
+    // 换一批:清空当日清单重新生成(已答记录保留在 answers 中,不会丢)
+    await api("/train/daily?force=1");
+    toast("已重新抽题"); renderTrain(host);
+  };
+  const list = $("#tr-list");
+  const state = { idx: items.findIndex(i => !i.answered), start: Date.now() };
+  if (state.idx < 0) state.idx = items.length; // 全部已答
+  function render() {
+    if (state.idx >= items.length) return finishView();
+    const q = items[state.idx];
+    const isChoice = (q.options || []).length >= 2;
+    let inner = `<div class="quiz-top"><b>每日训练</b>
+      <div class="progress-track"><div class="progress-fill" style="width:${Math.round(state.idx / items.length * 100)}%"></div></div>
+      <span class="muted">${state.idx + 1} / ${items.length}</span></div>
+      <div class="card quiz-card"><div><span class="tag ${SUBJECT_TAG[q.subject]}">${SUBJECTS[q.subject]}</span>
+      ${q.ai_generated ? '<span class="tag purple">AI 生成题</span>' : '<span class="tag gray">' + esc(q.source_type) + "</span>"}
+      <span class="tag gray">难度 ${q.difficulty}/5</span></div>
+      <div class="q-text">${md(q.question_md)}</div>`;
+    if (isChoice) {
+      inner += '<div class="options">' + q.options.map((o, i) =>
+        `<div class="option" data-letter="${LETTERS[i]}"><span class="letter">${LETTERS[i]}</span><span>${md(o)}</span></div>`).join("") + "</div>";
+    } else {
+      inner += '<div class="toolbar" style="margin-top:14px"><button class="primary" id="tr-reveal">对答案(先自己写)</button></div>';
+    }
+    inner += '<div id="tr-after"></div></div>';
+    list.innerHTML = inner;
+    typeset(list);
+    let picked = null, revealed = false;
+    $$(".option").forEach(el => el.onclick = () => {
+      if (revealed) return;
+      picked = el.dataset.letter;
+      $$(".option").forEach(x => x.classList.remove("selected"));
+      el.classList.add("selected");
+    });
+    const rev = $("#tr-reveal");
+    if (rev) rev.onclick = () => { revealed = true; submit(null, true); };
+    if (isChoice) {
+      list.querySelector(".quiz-card").insertAdjacentHTML("beforeend",
+        '<div class="toolbar" style="margin-top:14px"><button class="primary" id="tr-submit" disabled>提交</button></div>');
+      $$(".option").forEach(el => el.onclick = () => {
+        if (revealed) return;
+        picked = el.dataset.letter;
+        $$(".option").forEach(x => x.classList.remove("selected"));
+        el.classList.add("selected");
+        $("#tr-submit").disabled = false;
+      });
+      $("#tr-submit").onclick = () => { if (picked) { revealed = true; submit(picked, false); } };
+    }
+    async function submit(pick, selfMode) {
+      const seconds = Math.round((Date.now() - state.start) / 1000);
+      state.start = Date.now();
+      let correct;
+      if (selfMode) {
+        // 大题自评:先展示解析再自评
+        $("#tr-after").innerHTML = `<div class="explain"><h4>参考解析</h4><div>${md(q.solution_md || "(无解析)")}</div></div>
+          <div class="grade-row"><button data-c="1" class="good">做对了</button><button data-c="0" class="again">没做对</button></div>`;
+        typeset($("#tr-after"));
+        $$("#tr-after .grade-row button").forEach(b => b.onclick = () =>
+          finalize(b.dataset.c === "1", pick, seconds, selfMode));
+        return;
+      }
+      const r = await api("/train/answer", { method: "POST", body: {
+        qid: q.id, picked: pick, seconds } });
+      correct = r.correct;
+      // 高亮
+      $$(".option").forEach(el => {
+        el.classList.add("disabled");
+        if (el.dataset.letter === q.answer) el.classList.add("correct");
+        else if (el.dataset.letter === pick) el.classList.add("wrong");
+      });
+      $("#tr-submit").parentElement.style.display = "none";
+      if (correct) {
+        $("#tr-after").innerHTML = `<div class="explain"><h4>✓ 回答正确</h4><div>${md(q.solution_md || "")}</div></div>
+          <div class="toolbar" style="margin-top:12px"><button class="primary" id="tr-next">下一题 →</button></div>`;
+      } else {
+        $("#tr-after").innerHTML = `<div class="explain"><h4>✗ 正确答案:${esc(q.answer)}</h4><div>${md(q.solution_md || "")}</div></div>
+          <p style="font-size:12.5px;margin:8px 0 4px;color:var(--text-2)">错因标记(会写入错题本,影响复习安排):</p>
+          <div class="grade-row">
+            <button data-tag="概念不清" class="again">概念不清</button>
+            <button data-tag="计算失误" class="hard">计算失误</button>
+            <button data-tag="粗心" class="hard">粗心</button>
+            <button data-tag="不会做" class="again">不会做</button></div>`;
+      }
+      typeset($("#tr-after"));
+      if (correct) {
+        $("#tr-next").onclick = () => { state.idx++; render(); };
+      } else {
+        $$("#tr-after .grade-row button[data-tag]").forEach(b => b.onclick = async () => {
+          await api("/train/answer", { method: "POST", body: {
+            qid: q.id, picked: pick, seconds, error_tag: b.dataset.tag } });
+          toast("已记入错题本:" + b.dataset.tag);
+          state.idx++; render();
+        });
+      }
+    }
+    async function finalize(selfCorrect, pick, seconds) {
+      await api("/train/answer", { method: "POST", body: {
+        qid: q.id, picked: pick || "自评", seconds,
+        self_correct: selfCorrect, error_tag: selfCorrect ? "" : "不会做" } });
+      state.idx++; render();
+    }
+  }
+  async function finishView() {
+    await api("/train/finish", { method: "POST" }).catch(() => {});
+    const t2 = await api("/train/daily");
+    let html = `<div class="card quiz-card" style="text-align:center;padding:40px 26px">
+      <div style="font-size:42px">🏁</div><h2>今日训练完成</h2>
+      <p class="muted">共 ${t2.done} 题 · 正确 ${t2.correct}(${t2.done ? Math.round(100 * t2.correct / t2.done) : 0}%)· 成绩已计入统计,错题已进入错题本复习队列</p>
+      <div class="toolbar" style="justify-content:center;margin-top:12px">
+        <a class="btn primary" href="#growth">看成长记录</a>
+        <a class="btn" href="#study/mistakes">复习错题本</a>
+        <a class="btn" href="#home">回作战室</a></div></div>`;
+    list.innerHTML = html;
+    refreshDueBadge();
+  }
+  render();
+}
 
 /* ---- 刷题 ---- */
 async function renderPractice(host) {
@@ -773,8 +911,13 @@ function vbReview(id, host) {
 let kpFilter = { subject: "", q: "", chapter: "" };
 /* ---- 题库 Tab(插入 renderKnowledge 之前) ---- */
 async function renderBank(host) {
-  const [items, stats] = await Promise.all([
-    api("/questions"), api("/data-quality")]);
+  const page0 = host.dataset.qpage || 1;
+  const qp = new URLSearchParams();
+  if (host.dataset.subject) qp.set("subject", host.dataset.subject);
+  qp.set("page", page0); qp.set("per", 50);
+  const [pager, stats] = await Promise.all([
+    api("/questions?" + qp), api("/data-quality")]);
+  const items = pager.items;
   const byType = {};
   for (const q of items) byType[q.source_type] = (byType[q.source_type] || 0) + 1;
   let html = `<div class="toolbar">
@@ -797,26 +940,22 @@ async function renderBank(host) {
         ${q.copyright_status === "来源不明-待核验" ? '<span class="tag red">待核验</span>' : ""}</span></div></div>`;
   }
   html += "</div>";
+  // 分页条
+  if (pager.pages > 1) {
+    html += `<div class="toolbar" style="justify-content:center;margin-top:12px">
+      <button id="qb-prev" ${pager.page > 1 ? "" : "disabled"}>← 上一页</button>
+      <span class="muted">第 ${pager.page} / ${pager.pages} 页 · 共 ${pager.total} 题</span>
+      <button id="qb-next" ${pager.page < pager.pages ? "" : "disabled"}>下一页 →</button></div>`;
+  }
   host.innerHTML = html;
   typeset(host);
-  $("#qb-subject").onchange = e => { host.dataset.subject = e.target.value; renderBankFiltered(host, e.target.value); };
+  const pnav = d => () => { host.dataset.qpage = (pager.page + d); renderBank(host); };
+  if ($("#qb-prev")) { $("#qb-prev").onclick = pnav(-1); $("#qb-next").onclick = pnav(1); }
+  $("#qb-subject").onchange = e => { host.dataset.subject = e.target.value; host.dataset.qpage = 1; renderBank(host); };
   $$("#qb-list .item").forEach(el => el.onclick = () => showQb(el.dataset.id, host));
   $("#qb-add").onclick = () => qbForm(host);
   $("#qb-import").onclick = () => qbImport(host);
   $("#qb-practice").onclick = () => bankPractice(host);
-}
-
-async function renderBankFiltered(host, subject) {
-  if (!subject) return renderBank(host);
-  const items = await api("/questions?subject=" + subject);
-  // 简化:重渲染列表部分
-  const listEl = $("#qb-list");
-  listEl.innerHTML = items.slice(0, 100).map(q => `<div class="item" data-id="${q.id}">
-    <div class="head"><div style="min-width:0"><b>${esc(q.question_md.split("\n")[0].slice(0, 64))}</b>
-      <div class="sub">${SUBJECTS[q.subject]}${q.year ? " · " + q.year : ""} · ${esc(q.qtype || "未分类")}</div></div>
-      <span><span class="tag ${q.source_type.includes("AI") ? "purple" : q.source_type === "真题" ? "amber" : "gray"}">${esc(q.source_type)}</span></span></div></div>`).join("")
-    || '<div class="card muted">该科目暂无题目</div>';
-  $$("#qb-list .item").forEach(el => el.onclick = () => showQb(el.dataset.id, host));
 }
 
 async function showQb(id, host) {
@@ -1450,7 +1589,7 @@ async function renderMilestones(host) {
 let intelTab = "search";
 ROUTES.intel = async (sub) => {
   if (sub) intelTab = sub;
-  const names = { search: "搜索", sources: "来源清单", schools: "梦校与目标", quality: "数据质量" };
+  const names = { search: "搜索", sources: "来源清单", schools: "梦校与目标", exp: "经验与方法", quality: "数据质量" };
   let html = `<div class="page-head"><div>
     <div class="section-label">INTELLIGENCE</div><h1>考研情报站</h1></div></div>
   <div class="tabs">${Object.entries(names).map(([k, n]) =>
@@ -1461,6 +1600,7 @@ ROUTES.intel = async (sub) => {
   const body = $("#intel-body");
   if (intelTab === "search") await renderSearch(body);
   else if (intelTab === "sources") await renderSources(body);
+  else if (intelTab === "exp") await renderExperience(body);
   else if (intelTab === "quality") await renderQuality(body);
   else await renderSchools(body);
 };
@@ -1542,6 +1682,91 @@ async function renderSources(host) {
     await api("/sources/" + b.dataset.del, { method: "DELETE" });
     renderSources(host);
   });
+}
+
+async function renderExperience(host) {
+  const [items, cats] = [await api("/experience"),
+    ["数学", "英语", "政治", "408", "择校", "复试", "调剂", "时间管理", "备考心态", "高效学习", "失败教训", "其他"]];
+  let html = `<div class="toolbar">
+    <button class="primary" id="exp-add">+ 添加经验/方法</button>
+    <select id="exp-cat"><option value="">全部分类</option>
+      ${cats.map(c => `<option>${c}</option>`).join("")}</select>
+    <label style="margin:0"><input type="checkbox" id="exp-fav"> 只看收藏</label>
+    <span class="muted">${items.length} 条 · 链接帖标注核验状态;单条经验≠普遍结论</span></div><div id="exp-list">`;
+  if (!items.length) html += '<div class="card state"><div class="big">📖</div><b>经验库为空</b><span>手动添加公开文章链接(抖音/小红书/知乎等),或记录你自己的方法笔记——平台不会绕过平台限制去抓取。</span></div>';
+  for (const p of items) {
+    html += `<div class="item" style="cursor:default" data-id="${p.id}">
+      <div class="head"><div style="min-width:0"><b>${p.favorite ? "⭐ " : ""}${esc(p.title)}</b>
+        <div class="sub">${esc(p.platform || "自记")}${p.author ? " · " + esc(p.author) : ""}${p.published ? " · " + esc(p.published) : ""}
+        ${p.url ? ' · <a href="' + esc(p.url) + '" target="_blank" rel="noopener">原文 ↗</a>' : ""}</div></div>
+        <span><span class="tag ${p.verify_status.includes("可访问") || p.verify_status.includes("原创") ? "green" : p.verify_status.includes("无法") ? "red" : "amber"}">${esc(p.verify_status)}</span></span></div>
+      <div style="font-size:13.5px;margin-top:6px">${esc(p.summary)}</div>
+      ${(p.categories || []).map(c => '<span class="tag gray">' + esc(c) + "</span>").join(" ")}
+      ${p.methods ? '<div class="sub" style="margin-top:4px">方法:' + esc(p.methods) + "</div>" : ""}
+      <div class="toolbar" style="margin:8px 0 0;gap:6px">
+        <button data-fav="${p.id}" class="${p.favorite ? "primary" : ""}">${p.favorite ? "已收藏" : "收藏"}</button>
+        ${p.url ? '<button data-check="' + p.id + '">核验链接</button>' : ""}
+        <button data-note="${p.id}">备注</button>
+        <button class="again" data-del="${p.id}" style="margin-left:auto">删除</button></div></div>`;
+  }
+  html += "</div>";
+  host.innerHTML = html;
+  typeset(host);
+  const refresh = () => renderExperience(host);
+  $("#exp-cat").onchange = e => { host.dataset.cat = e.target.value; refresh(); };
+  $("#exp-fav").onchange = e => { host.dataset.fav = e.target.checked ? "1" : ""; refresh(); };
+  $$("button[data-fav]").forEach(b => b.onclick = async () => {
+    const p = items.find(x => x.id === b.dataset.fav);
+    await api("/experience/" + p.id, { method: "PUT", body: { favorite: !p.favorite } });
+    refresh();
+  });
+  $$("button[data-check]").forEach(b => b.onclick = async () => {
+    b.textContent = "核验中…";
+    const p = await api("/experience/" + b.dataset.check + "/check", { method: "POST" });
+    b.textContent = p.verify_status.slice(0, 14);
+  });
+  $$("button[data-note]").forEach(b => b.onclick = () => {
+    const p = items.find(x => x.id === b.dataset.note);
+    openModal(`<h2>个人备注</h2><textarea id="pn-note" style="min-height:110px">${esc(p.notes || "")}</textarea>
+      <p><button class="primary" id="pn-save">保存</button> <button onclick="closeModal()">取消</button></p>`);
+    $("#pn-save").onclick = async () => {
+      await api("/experience/" + p.id, { method: "PUT", body: { notes: $("#pn-note").value } });
+      closeModal(); refresh();
+    };
+  });
+  $$("button[data-del]").forEach(b => b.onclick = async () => {
+    if (!confirm("删除该条?")) return;
+    await api("/experience/" + b.dataset.del, { method: "DELETE" });
+    refresh();
+  });
+  $("#exp-add").onclick = () => {
+    openModal(`<h2>添加经验/方法</h2>
+    <p class="muted">粘贴公开文章链接+你的摘要;或记录自己的方法。平台不抓取受限内容。</p>
+    <div class="form-grid">
+      <div class="full"><label>标题 *</label><input id="pe-title" style="width:100%"></div>
+      <div><label>平台(抖音/小红书/知乎/B站/公众号…)</label><input id="pe-plat" style="width:100%"></div>
+      <div><label>原文链接</label><input id="pe-url" placeholder="https://..." style="width:100%"></div>
+      <div><label>作者(公开显示名)</label><input id="pe-author" style="width:100%"></div>
+      <div><label>发布日期(可获得时)</label><input id="pe-date" placeholder="如 2026-03" style="width:100%"></div>
+      <div class="full"><label>摘要(你的概括,不是复制全文)</label><textarea id="pe-sum"></textarea></div>
+      <div class="full"><label>分类(逗号分隔)</label><input id="pe-cats" placeholder="如:数学,时间管理" style="width:100%"></div>
+      <div class="full"><label>方法要点</label><input id="pe-methods" style="width:100%"></div>
+      <div class="full"><label>适用阶段</label><input id="pe-stage" placeholder="基础/强化/冲刺/全程" style="width:100%"></div>
+    </div>
+    <p><button class="primary" id="pe-save">保存</button> <button onclick="closeModal()">取消</button></p>`);
+    $("#pe-save").onclick = async () => {
+      if (!$("#pe-title").value.trim()) return toast("标题必填");
+      try {
+        await api("/experience", { method: "POST", body: {
+          title: $("#pe-title").value, platform: $("#pe-plat").value,
+          url: $("#pe-url").value, author: $("#pe-author").value,
+          published: $("#pe-date").value || null, summary: $("#pe-sum").value,
+          categories: $("#pe-cats").value.split(",").map(s => s.trim()).filter(Boolean),
+          methods: $("#pe-methods").value, stage: $("#pe-stage").value } });
+        closeModal(); toast("已保存"); refresh();
+      } catch (e) { toast(e.message); }
+    };
+  };
 }
 
 async function renderQuality(host) {
@@ -1883,6 +2108,11 @@ ROUTES.account = async () => {
       <label>激励风格</label><select id="acc-style" style="width:100%">
         ${[["rational", "理性教练 —— 用证据和数字说话"], ["gentle", "温和陪伴 —— 累了就休息,马拉松心态"], ["sprint", "高强度冲刺 —— 提醒你保持节奏"]]
           .map(([v, n]) => `<option value="${v}" ${acc.motivation_style === v ? "selected" : ""}>${n}</option>`).join("")}</select>
+      <label>每日训练题量(共 <span id="dq-total"></span> 题/天)</label>
+      <div class="toolbar" style="gap:6px">${["math", "cs408", "english", "politics"].map(sub =>
+        `<label style="margin:0">${SUBJECTS[sub]}<input type="number" min="0" max="50" data-quota="${sub}"
+          value="${((settings.daily_train || {}).quotas || {})[sub] ?? 5}" style="width:56px"></label>`).join("")}
+        <button id="dq-save">保存题量</button></div>
       <label>各科当前水平(自评,供教练参考)</label>
       <div class="toolbar" style="gap:6px">${["math", "cs408", "english", "politics"].map(sub =>
         `<label style="margin:0">${SUBJECTS[sub]}<select data-level="${sub}">
@@ -1962,6 +2192,17 @@ ROUTES.account = async () => {
       ? events.slice(0, 10).map(e => `<div class="task"><span class="title">${esc(e.time)} · ${esc(e.event)}</span></div>`).join("")
       : "暂无记录";
   });
+  const dqTotal = () => { $("#dq-total").textContent =
+    $$("input[data-quota]").reduce((a, i) => a + (+i.value || 0), 0); };
+  $$("input[data-quota]").forEach(i => i.oninput = dqTotal); dqTotal();
+  $("#dq-save").onclick = async () => {
+    const quotas = {};
+    $$("input[data-quota]").forEach(i => quotas[i.dataset.quota] = +i.value || 0);
+    try {
+      await api("/train/settings", { method: "PUT", body: { quotas } });
+      toast("每日训练题量已保存(明天生效,或点「换一批」立即重抽)");
+    } catch (e) { toast(e.message); }
+  };
   $("#acc-save").onclick = async () => {
     await api("/account", { method: "PUT", body: {
       display_name: $("#acc-name").value, motivation_style: $("#acc-style").value } });

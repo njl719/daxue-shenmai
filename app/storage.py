@@ -29,6 +29,9 @@ COLLECTIONS = {
     "search_records": list,
     "universities": list,
     "questions": list,
+    "train": dict,
+    "train_state": dict,
+    "experience_posts": list,
 }
 
 

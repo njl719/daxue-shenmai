@@ -15,7 +15,7 @@ import os
 from .storage import Store
 
 MIGRATIONS = []
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 POLITICS_TRACK = {
     "name": "思想政治理论(101)", "subject": "politics",
@@ -101,6 +101,14 @@ def _v3_to_v4(store):
     from . import universities as U
     n = U.seed_universities(store, fetch_images=True)
     return "v3→v4 完成:目标院校资料库初始化(%d 所)" % n
+
+
+@migration(4)
+def _v4_to_v5(store):
+    """v4→v5:题库种子(平台原创 45 题,幂等;AI 生成题由 tools/gen_questions.py 本地补充)。"""
+    from . import questionseed as QS
+    added = QS.seed_original_questions(store)
+    return "v4→v5 完成:原创题入库 %d 题" % added
 
 
 def run_migrations(store):

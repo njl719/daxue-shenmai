@@ -25,7 +25,7 @@ _app_store = None  # create_app 时注入,_ai_cfg 等辅助函数使用
 def _ai_cfg():
     return ai_mod.get_ai_config((_app_store or Store()).load("settings"))
 
-SUBJECTS = ("math", "cs408", "english")
+SUBJECTS = ("math", "cs408", "english", "politics")
 SUBJECT_NAMES = {"math": "数学", "cs408": "408", "english": "英语", "all": "通用"}
 STATUSES = ("not_started", "learning", "initial", "consolidating",
             "mostly", "mastered", "reviewing")  # reviewing 为旧数据兼容
@@ -33,6 +33,7 @@ QTYPES = {
     "math": ["概念", "计算", "证明", "综合应用"],
     "cs408": ["概念", "计算", "综合"],
     "english": ["定位错误", "逻辑理解错误", "词义误判", "选项辨析错误"],
+    "politics": ["概念", "选择", "分析"],
 }
 ERROR_REASONS = profile_mod.ERROR_REASONS
 ALLOWED_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
@@ -1111,7 +1112,11 @@ def create_app(data_dir=None, backup_dir=None):
             items = [x for x in items if x.get("ai_generated")]
         if q_:
             items = [x for x in items if q_ in (x["question_md"] + (x.get("source_desc") or "")).lower()]
-        return jsonify(items)
+        page = max(1, request.args.get("page", 1, type=int))
+        per = min(100, max(10, request.args.get("per", 50, type=int)))
+        return jsonify({"items": items[(page - 1) * per: page * per],
+                        "total": len(items), "page": page, "per": per,
+                        "pages": (len(items) + per - 1) // per})
 
     @app.post("/api/questions")
     def questions_add():
@@ -1182,7 +1187,193 @@ def create_app(data_dir=None, backup_dir=None):
         take = items[:max(1, min(20, request.args.get("n", 5, type=int)))]
         return jsonify(take)
 
+    # ---------- 每日训练 ----------
+    @app.get("/api/train/daily")
+    def train_daily():
+        from . import training as TR
+        date_str = request.args.get("date") or _today().isoformat()
+        t = TR.build_daily(store, date_str, force=request.args.get("force") == "1")
+        questions = {q["id"]: q for q in store.load("questions")}
+        items = []
+        for ref in t.get("questions") or []:
+            q = questions.get(ref["id"])
+            if q:
+                ans = (t.get("answers") or {}).get(q["id"])
+                items.append({k: q[k] for k in (
+                    "id", "subject", "question_md", "options", "answer",
+                    "solution_md", "qtype", "difficulty", "source_type",
+                    "ai_generated", "knowledge_ids")} | {
+                    "answered": bool(ans), "result": (ans or {}).get("correct")})
+        settings = store.load("settings")
+        quotas = ((settings.get("daily_train") or {}).get("quotas")
+                  or {"math": 5, "cs408": 5, "english": 5, "politics": 5})
+        return jsonify({"date": t["date"], "items": items,
+                        "quotas": quotas, "shortage": t.get("shortage") or {},
+                        "done": len(t.get("answers") or {}),
+                        "correct": sum(1 for a in (t.get("answers") or {}).values() if a.get("correct"))})
+
+    @app.post("/api/train/answer")
+    def train_answer():
+        from . import training as TR
+        body = request.get_json(force=True, silent=True) or {}
+        qid = body.get("qid")
+        questions = {q["id"]: q for q in store.load("questions")}
+        q = questions.get(qid)
+        if not q:
+            return _bad("题目不存在", 404)
+        picked = body.get("picked")
+        correct = (bool(q.get("options")) and picked == q.get("answer")) or \
+                  (not q.get("options") and bool(body.get("self_correct")))
+        t = TR.record_answer(store, qid, picked, correct,
+                             body.get("seconds"), body.get("error_tag"))
+        auth_mod.audit(store, "train_answer", "%s %s" % (qid, "对" if correct else "错"))
+        return jsonify({"correct": correct, "answer": q.get("answer"),
+                        "solution_md": q.get("solution_md", ""),
+                        "done": len(t.get("answers") or {})})
+
+    @app.post("/api/train/finish")
+    def train_finish():
+        """当日成绩汇总写入练习记录(幂等:同日同科目只记一条)。"""
+        t = store.load("train")
+        answers = t.get("answers") or {}
+        if not answers:
+            return _bad("还没有作答")
+        questions = {q["id"]: q for q in store.load("questions")}
+        by_sub = {}
+        for qid, a in answers.items():
+            q = questions.get(qid)
+            if not q:
+                continue
+            s = by_sub.setdefault(q["subject"], {"total": 0, "correct": 0, "kids": set()})
+            s["total"] += 1
+            s["correct"] += 1 if a.get("correct") else 0
+            for kid in q.get("knowledge_ids") or []:
+                s["kids"].add(kid)
+        out = []
+        for sub, v in by_sub.items():
+            items = store.load("records")
+            cid = "train-" + t["date"] + "-" + sub
+            rec = next((r for r in items if r.get("client_id") == cid), None)
+            if not rec:
+                rec = {"id": _next_id(items, "rc"), "client_id": cid,
+                       "date": t["date"], "subject": sub,
+                       "session_type": "daily_train",
+                       "knowledge_ids": list(v["kids"]),
+                       "total": v["total"], "correct": v["correct"],
+                       "duration_min": None, "detail": []}
+                items.append(rec)
+                store.save("records", items)
+            out.append(rec["id"])
+        return jsonify({"ok": True, "records": out})
+
+    @app.put("/api/train/settings")
+    def train_settings():
+        body = request.get_json(force=True, silent=True) or {}
+        quotas = body.get("quotas")
+        if not isinstance(quotas, dict):
+            return _bad("quotas 必须是 {subject: 数量}")
+        for k, v in quotas.items():
+            if k not in SUBJECTS:
+                return _bad("未知科目:%s" % k)
+            if not (isinstance(v, int) and 0 <= v <= 50):
+                return _bad("%s 数量须为 0-50 的整数" % k)
+        cur = store.load("settings")
+        cur["daily_train"] = {"quotas": quotas}
+        store.save("settings", cur)
+        return jsonify({"ok": True, "quotas": quotas})
+
+    # ---------- 经验帖 ----------
+    @app.get("/api/experience")
+    def experience_list():
+        items = store.load("experience_posts")
+        cat = request.args.get("category")
+        q_ = (request.args.get("q") or "").lower()
+        fav = request.args.get("favorite") == "1"
+        if cat:
+            items = [p for p in items if cat in (p.get("categories") or [])]
+        if fav:
+            items = [p for p in items if p.get("favorite")]
+        if q_:
+            items = [p for p in items if q_ in (p.get("title", "") +
+                                               p.get("summary", "") +
+                                               (p.get("notes") or "")).lower()]
+        return jsonify(sorted(items, key=lambda p: p.get("created", ""), reverse=True))
+
+    @app.post("/api/experience")
+    def experience_add():
+        body = request.get_json(force=True, silent=True) or {}
+        if not (body.get("title") or "").strip():
+            return _bad("标题必填")
+        url = (body.get("url") or "").strip()
+        if url and not url.startswith(("http://", "https://")):
+            return _bad("链接必须以 http(s):// 开头")
+        items = store.load("experience_posts")
+        item = {"id": _next_id(items, "ep"),
+                "title": body["title"].strip()[:100],
+                "platform": body.get("platform") or "",
+                "url": url,
+                "author": body.get("author") or "",
+                "published": body.get("published") or None,
+                "summary": (body.get("summary") or "")[:500],
+                "categories": [c for c in (body.get("categories") or []) if c][:4],
+                "stage": body.get("stage") or "",
+                "methods": body.get("methods") or "",
+                "notes": (body.get("notes") or "")[:1000],
+                "rating": body.get("rating"),
+                "favorite": bool(body.get("favorite")),
+                "verify_status": "待核验" if url else "个人笔记",
+                "last_checked": None,
+                "created": datetime.datetime.now().isoformat(timespec="seconds")}
+        items.append(item)
+        store.save("experience_posts", items)
+        return jsonify(item), 201
+
+    @app.put("/api/experience/<pid>")
+    def experience_update(pid):
+        body = request.get_json(force=True, silent=True) or {}
+        items = store.load("experience_posts")
+        for p in items:
+            if p["id"] == pid:
+                for f in ("title", "platform", "url", "author", "published",
+                          "summary", "categories", "stage", "methods", "notes",
+                          "rating", "favorite", "verify_status"):
+                    if f in body:
+                        p[f] = body[f]
+                store.save("experience_posts", items)
+                return jsonify(p)
+        return _bad("记录不存在", 404)
+
+    @app.delete("/api/experience/<pid>")
+    def experience_delete(pid):
+        items = store.load("experience_posts")
+        store.save("experience_posts", [p for p in items if p["id"] != pid])
+        return jsonify({"deleted": pid})
+
+    @app.post("/api/experience/<pid>/check")
+    def experience_check(pid):
+        """核验链接可达性。"""
+        items = store.load("experience_posts")
+        for p in items:
+            if p["id"] == pid:
+                if not p.get("url"):
+                    p["verify_status"] = "个人笔记(无链接)"
+                else:
+                    try:
+                        rq = urllib.request.Request(p["url"], method="HEAD",
+                            headers={"User-Agent": "daxue-intel/1.0"})
+                        with urllib.request.urlopen(rq, timeout=15) as resp:
+                            p["verify_status"] = "链接可访问(HTTP %d)" % resp.status
+                    except urllib.error.HTTPError as e:
+                        p["verify_status"] = "HTTP %d" % e.code
+                    except Exception as e:
+                        p["verify_status"] = "无法访问:%s" % str(e)[:50]
+                p["last_checked"] = datetime.datetime.now().isoformat(timespec="seconds")
+                store.save("experience_posts", items)
+                return jsonify(p)
+        return _bad("记录不存在", 404)
+
     # ---------- 目标院校资料库(v4) ----------
+
     def _uni_out(u):
         from . import universities as U
         out = dict(u)
@@ -1429,8 +1620,18 @@ def create_app(data_dir=None, backup_dir=None):
     @app.get("/api/motivation/daily")
     def motivation_daily():
         style = store.load("settings").get("motivation_style", "rational")
-        pool = QUOTES.get(style, QUOTES["rational"])
+        # 用户语录库优先(公版/原创已核验),不足时回退内置池
+        user_pool = [m for m in store.load("motivations")
+                     if m.get("type") == "quote" and m.get("verified")]
+        pool = user_pool or QUOTES.get(style, QUOTES["rational"])
         idx = int(_today().strftime("%Y%m%d")) % len(pool)
+        if user_pool:
+            q0 = pool[idx]
+            quote = {"text": q0["text"], "author": q0.get("author", ""),
+                     "source": q0.get("license", ""), "license": q0.get("license", "")}
+            prof0 = None
+        if not user_pool:
+            quote = None
         prof = profile_mod.compute_profile(
             store.load("mistakes"), store.load("records"),
             store.load("reflections"), store.load("knowledge"),
@@ -1444,7 +1645,11 @@ def create_app(data_dir=None, backup_dir=None):
                 growth.append("「%s」曾忘 %d 次,现已连续 %d 次复测通过 —— 稳定掌握"
                               % (kp.get((m.get("knowledge_ids") or ["?"])[0], "一道错题"),
                                  m.get("lapses", 0), len(revs[-3:])))
-        return jsonify({"style": style, "quote": pool[idx],
+        if not quote:
+            b = pool[idx]
+            quote = {"text": b["text"], "author": b.get("author", ""),
+                     "source": b.get("source", ""), "license": b.get("source", "系统内置")}
+        return jsonify({"style": style, "quote": quote,
                         "growth_note": growth[0] if growth else None,
                         "weekly_summary_hint": prof["stage"]})
 
