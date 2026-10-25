@@ -1857,16 +1857,16 @@ def main():
     if store.load("settings").get("backup_on_start", True):
         dest = store.backup("startup")
         print("启动备份:", dest)
+    import os as _os
     ip = _lan_ip()
+    port = int(_os.environ.get("DX_PORT") or _os.environ.get("PORT") or 8321)
     has_account = bool(auth_mod.get_user(store))
     print("大雪深埋 · AI 考研私人教练 已启动 (Ctrl+C 退出)")
-    print("  本机访问: http://127.0.0.1:8321")
+    print("  本机访问: http://127.0.0.1:%d" % port)
     if not has_account:
         print("  首次使用:打开首页创建管理员账号")
     if ip:
-        print("  手机访问(同一 Wi-Fi): http://%s:8321" % ip)
-    import os as _os
-    port = int(_os.environ.get("DX_PORT") or _os.environ.get("PORT") or 8321)
+        print("  手机访问(同一 Wi-Fi): http://%s:%d" % (ip, port))
     app.run(host="0.0.0.0", port=port, debug=False)
 
 
