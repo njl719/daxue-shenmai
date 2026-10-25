@@ -1,0 +1,5 @@
+# 替换为你的域名;Caddy 自动申请并续期 HTTPS 证书
+your.domain.com {
+    reverse_proxy ascent:8321
+    encode gzip
+}

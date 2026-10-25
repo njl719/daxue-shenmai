@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: daxue-shenmai
+    runtime: python
+    plan: free
+    buildCommand: pip install flask
+    startCommand: python run.py
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9

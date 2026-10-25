@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0B2545">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="大雪深埋">
+<title>大雪深埋 · AI 考研私人教练</title>
+<link rel="manifest" href="/static/manifest.json">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="/static/icons/icon-192.png">
+<link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
+<link rel="stylesheet" href="/static/style.css">
+<script>
+/* 主题:在 CSS 加载前应用,避免闪烁 */
+(function () {
+  var t = localStorage.getItem("dx-theme");
+  if (!t) t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
+</head>
+<body>
+<div id="offline-banner">网络连接已断开 —— 界面可浏览,数据将在恢复联网后同步</div>
+
+<nav id="topnav">
+  <div class="nav-inner">
+    <a href="#home" class="logo">
+      <svg width="26" height="26" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="lg-book" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#1d4ed8"/>
+          </linearGradient>
+        </defs>
+        <path fill="url(#lg-book)" d="M20,18 L52,18 Q60,18 60,26 L60,102 Q52,94 20,94 Q14,94 14,88 L14,24 Q14,18 20,18 Z"/>
+        <path fill="url(#lg-book)" d="M100,18 L68,18 Q60,18 60,26 L60,102 Q68,94 100,94 Q106,94 106,88 L106,24 Q106,18 100,18 Z" opacity="0.85"/>
+        <circle cx="60" cy="58" r="12" fill="#E5C88F"/>
+        <path d="M55,58 L59,62 L66,53" stroke="#0B2545" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span>大雪深埋</span>
+      <span class="logo-tag">DXSM</span>
+    </a>
+    <div class="nav-links nav-set" id="nav">
+      <a href="#home" data-view="home">今日</a>
+      <a href="#study" data-view="study">学习中心</a>
+      <a href="#coach" data-view="coach">AI 教练</a>
+      <a href="#growth" data-view="growth">成长</a>
+      <a href="#intel" data-view="intel">情报站</a>
+      <a href="#plan" data-view="plan">计划</a>
+      <a href="#account" data-view="account">个人中心</a>
+    </div>
+    <div class="nav-right">
+      <button class="theme-toggle" id="theme-toggle" title="切换明暗主题">🌙</button>
+      <a href="#practice" class="due-badge" id="nav-due" title="今日到期">…</a>
+    </div>
+  </div>
+</nav>
+
+<!-- 移动端底部导航(桌面隐藏) -->
+<nav id="bottomnav" class="nav-set">
+  <a href="#home" data-view="home"><i>🏠</i>今日</a>
+  <a href="#study" data-view="study"><i>📚</i>学习</a>
+  <a href="#coach" data-view="coach"><i>🤖</i>教练</a>
+  <a href="#growth" data-view="growth"><i>📈</i>成长</a>
+  <a href="#intel" data-view="intel"><i>🔭</i>情报</a>
+  <a href="#plan" data-view="plan"><i>📅</i>计划</a>
+  <a href="#account" data-view="account"><i>👤</i>我的</a>
+</nav>
+
+<main id="view" class="container"></main>
+
+<footer class="site-footer">
+  <div class="container">
+    <span>大雪深埋 · 本地运行 · 数据自持 · AI 由本地 Ollama 驱动</span>
+    <span class="muted">data/ 即全部数据(含图片) · backups/ 自动备份 · exports/ 可导出迁移</span>
+  </div>
+</footer>
+
+<div id="modal-mask"><div id="modal"></div></div>
+<div class="toast" id="toast"></div>
+
+<script defer src="/static/vendor/katex/katex.min.js"></script>
+<script defer src="/static/vendor/katex/auto-render.min.js"></script>
+<script defer src="/static/app.js"></script>
+</body>
+</html>

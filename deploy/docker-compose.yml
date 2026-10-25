@@ -1,0 +1,21 @@
+services:
+  ascent:
+    build: ..
+    container_name: ascent
+    restart: unless-stopped
+    volumes:
+      - ascent-data:/data          # 学习数据与图片
+    environment:
+      - DX_DATA_DIR=/data
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on: [ascent]
+volumes:
+  ascent-data:
+  caddy-data:

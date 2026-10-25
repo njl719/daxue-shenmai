@@ -1,0 +1,19 @@
+# 个人数据与运行时产物 —— 绝不入库
+data/
+backups/
+exports/
+*.log
+server.log
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 测试临时文件
+tests/*.png
+tests/*_b64.txt
+
+# 系统
+Thumbs.db
+.DS_Store

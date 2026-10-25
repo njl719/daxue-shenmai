@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="500" height="300" viewBox="0 0 500 300">
+<rect width="500" height="300" fill="#0B2545"/>
+<rect x="12" y="12" width="476" height="276" fill="none" stroke="#A9814B" stroke-opacity="0.5" stroke-width="2" rx="14"/>
+<text x="250" y="165" font-size="120" fill="#E5C88F" text-anchor="middle"
+ font-family="Georgia, 'Noto Serif SC', serif" font-weight="700">测</text>
+<text x="250" y="230" font-size="20" fill="#8FA3C2" text-anchor="middle" letter-spacing="4"
+ font-family="sans-serif">测试大学</text>
+</svg>
