@@ -2315,6 +2315,10 @@ def main():
     for note in migrate_mod.run_migrations(store):
         print("迁移:", note)
     app, store = create_app()
+    # 启动时一次性清扫过期会话(收敛公网暴露面)
+    purged = auth_mod.purge_expired_sessions(store)
+    if purged:
+        print("已清扫过期会话:", purged)
     # 热点雷达定时刷新:仅当用户在设置里开启且非测试环境才启动后台线程
     if (store.load("settings").get("radar") or {}).get("auto_refresh") \
             and not os.environ.get("PYTEST_CURRENT_TEST"):
