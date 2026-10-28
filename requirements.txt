@@ -1,0 +1,2 @@
+# 运行时依赖(唯一第三方包)。升级前先本地全量测试: python -m pytest tests/ -q
+flask==3.1.3
