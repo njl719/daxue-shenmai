@@ -37,7 +37,7 @@ def test_login_logout(client):
     rv = client.post("/api/login", json={"username": "tester", "password": "wrong!"})
     assert rv.status_code == 401
     # 正确登录
-    rv = client.post("/api/login", json={"username": "tester", "password": "secret1"})
+    rv = client.post("/api/login", json={"username": "tester", "password": "secret123"})
     assert rv.status_code == 200
     assert client.get("/api/mistakes").status_code == 200
 
@@ -50,7 +50,7 @@ def test_login_failure_audited(client):
 
 def test_password_change_revokes_sessions(client):
     client.post("/api/account/password", json={
-        "old_password": "secret1", "new_password": "newpass66"})
+        "old_password": "secret123", "new_password": "newpass66"})
     # 旧会话已被吊销
     assert client.get("/api/mistakes").status_code == 401
     rv = client.post("/api/login", json={"username": "tester", "password": "newpass66"})
@@ -61,6 +61,48 @@ def test_password_change_requires_old(client):
     rv = client.post("/api/account/password", json={
         "old_password": "wrong!", "new_password": "whatever1"})
     assert rv.status_code == 400
+
+
+def test_password_min_length_boundary(tmp_path):
+    """T2:新密码下限 8 位(7 拒 8 收),注册与改密同规则;不影响存量账号登录。"""
+    from app.server import create_app
+    app, store = create_app(data_dir=str(tmp_path / "d"), backup_dir=str(tmp_path / "b"))
+    app.config["TESTING"] = True
+    c = app.test_client()
+    rv = c.post("/api/setup", json={"username": "u", "password": "short7x"})
+    assert rv.status_code == 400 and "至少 8 位" in rv.get_json()["error"]
+    rv = c.post("/api/setup", json={"username": "u", "password": "longenough8"})
+    assert rv.status_code in (200, 201)
+    # 改密同样受限(原密码正确、新密码 7 位)
+    c.post("/api/login", json={"username": "u", "password": "longenough8"})
+    rv = c.post("/api/account/password", json={
+        "old_password": "longenough8", "new_password": "seven7x"})
+    assert rv.status_code == 400 and "至少 8 位" in rv.get_json()["error"]
+    # 8 位新密码可改成功并重新登录
+    rv = c.post("/api/account/password", json={
+        "old_password": "longenough8", "new_password": "newpass88"})
+    assert rv.status_code == 200
+    assert c.post("/api/login", json={
+        "username": "u", "password": "newpass88"}).status_code == 200
+
+
+def test_purge_expired_sessions(tmp_path):
+    """T3:purge 只删过期项,幂等,空表安全。"""
+    import datetime as dt
+    from app import auth as A
+    from app.storage import Store
+    store = Store(data_dir=str(tmp_path / "d"), backup_dir=str(tmp_path / "b"))
+    now = dt.datetime.now()
+    store.save("sessions", [
+        {"token": "dead", "user": "u",
+         "expires": (now - dt.timedelta(hours=1)).isoformat(timespec="seconds")},
+        {"token": "alive", "user": "u",
+         "expires": (now + dt.timedelta(days=1)).isoformat(timespec="seconds")}])
+    assert A.purge_expired_sessions(store) == 1
+    assert [s["token"] for s in store.load("sessions")] == ["alive"]
+    assert A.purge_expired_sessions(store) == 0  # 幂等
+    store.save("sessions", [])
+    assert A.purge_expired_sessions(store) == 0  # 空表不异常
 
 
 def test_delete_data_requires_confirm(client):

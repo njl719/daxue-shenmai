@@ -22,5 +22,5 @@ def client(tmp_path):
     with app.test_client() as c:
         c.store = store
         # 建号并登录(认证后的会话)
-        c.post("/api/setup", json={"username": "tester", "password": "secret1"})
+        c.post("/api/setup", json={"username": "tester", "password": "secret123"})
         yield c

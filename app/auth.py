@@ -50,11 +50,14 @@ def get_user(store):
     return users[0] if users else None
 
 
+MIN_PASSWORD_LEN = 8
+
+
 def create_user(store, username, password):
     if get_user(store):
         return None, "账号已存在(如需重置请删除 data/users.json 并联系数据备份流程)"
-    if len(password) < 6:
-        return None, "密码至少 6 位"
+    if len(password or "") < MIN_PASSWORD_LEN:
+        return None, "密码至少 %d 位" % MIN_PASSWORD_LEN
     salt, pw = _hash_password(password)
     now = datetime.datetime.now().isoformat(timespec="seconds")
     user = {"username": username.strip() or "ascent", "salt": salt,
@@ -102,14 +105,24 @@ def destroy_session(store, token):
     store.save("sessions", sessions)
 
 
+def purge_expired_sessions(store):
+    """删除全部过期会话(启动时调用一次;登录时已做单用户清理)。返回删除数。"""
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    sessions = store.load("sessions")
+    keep = [s for s in sessions if s.get("expires", "") > now]
+    if len(keep) != len(sessions):
+        store.save("sessions", keep)
+    return len(sessions) - len(keep)
+
+
 def change_password(store, old_password, new_password):
     user = get_user(store)
     if not user:
         return "账号不存在"
     if not verify_password(old_password, user["salt"], user["password"]):
         return "原密码不正确"
-    if len(new_password) < 6:
-        return "新密码至少 6 位"
+    if len(new_password or "") < MIN_PASSWORD_LEN:
+        return "新密码至少 %d 位" % MIN_PASSWORD_LEN
     salt, pw = _hash_password(new_password)
     user["salt"], user["password"] = salt, pw
     users = store.load("users")
