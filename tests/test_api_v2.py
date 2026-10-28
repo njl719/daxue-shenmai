@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """API 集成测试:v2 新端点(上传/AI降级/反思/教练/画像/周报/复测增强)。"""
+import datetime
 import io
 import struct
 import zlib
@@ -133,13 +134,26 @@ def test_weekly_report_endpoint(client):
     client.post("/api/records", json={
         "subject": "math", "session_type": "practice", "total": 6,
         "correct": 4, "duration_min": 30, "detail": []})
-    rv = client.get("/api/report/weekly/2026-10-24")
+    # 当周周一动态计算:写入的记录日期是"今天",查询周必须与之对齐(修复日期硬编码)
+    _today = datetime.date.today()
+    monday = _today - datetime.timedelta(days=_today.weekday())
+    rv = client.get("/api/report/weekly/" + monday.isoformat())
     r = rv.get_json()
     for key in ("week_start", "tasks", "per_subject", "review", "compare",
                 "next_week_advice", "data_gaps", "unverified_judgments"):
         assert key in r
+    assert r["week_start"] == monday.isoformat()
     assert r["compare"]["this_week"]["total"] == 6
     assert r["compare"]["this_week"]["accuracy"] == 67
+
+
+def test_weekly_report_week_window_cross_year():
+    """周窗口口径:周一为起点、跨年不断裂(2026-12-31 是周四,当周周一为 12-28)。"""
+    from app import profile as P
+    r = P.weekly_report("2026-12-31", [], [], [], {}, [])
+    assert r["week_start"] == "2026-12-28"
+    assert r["week_end"] == "2027-01-03"
+    assert r["compare"]["this_week"]["total"] == 0  # 空数据不异常
 
 
 def test_review_with_duration_and_hint(client):
