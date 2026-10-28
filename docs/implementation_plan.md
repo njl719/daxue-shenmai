@@ -2,38 +2,39 @@
 
 > 创建:2026-10-28 · 依据:`docs/development_baseline.md`(基线提交 `b4a607a`,标签 `baseline-v3.1`)
 > 状态标记:☐ 待执行 / ◔ 进行中 / ✅ 完成 / ⏸ 搁置
+> **本轮 T0-T3 已全部执行**(2026-10-28,四个独立提交),全量回归结果见文末变更记录。
 
 ## 本轮(第二阶段后首批)选定任务
 
 挑选标准:证据充分(基线审计实测发现)· 优先级高 · 风险低 · 可验证(有明确测试/命令判据)。
 
-### T0 ✅→☐ 修复周报测试的日期硬编码(最高优先)
+### T0 ✅ 修复周报测试的日期硬编码(最高优先)
+
+- **状态(2026-10-28)**:已完成,提交 `584e1d8`。测试改为动态计算当周周一;新增跨年周窗口断言(2026-12-31 → 周一 2026-12-28、周日 2027-01-03)。test_api_v2.py 12 passed。
 
 - **证据**:基线全量跑 `1 failed, 141 passed`,根因已定位——`tests/test_api_v2.py::test_weekly_report_endpoint` 写入"今天"的数据,却查询硬编码周 `2026-10-24`,日期推进后永久失败(详见 development_baseline.md 第 3 节)。
 - **改法**:测试内用 `datetime.date.today()` 计算当前周起始日(与产品 `weekly_report` 的周口径一致),删除硬编码日期;不改产品代码。
 - **验证**:`pytest tests/test_api_v2.py -q` 全绿;全量套件 `142 passed`(恢复全绿基线);为防复发,加一条"周起始日计算"的纯函数断言(跨年周也正确)。
 - **风险**:极低,纯测试侧。
 
-### T1 ☐ 依赖清单与版本固定
+### T1 ✅ 依赖清单与版本固定
+
+- **状态(2026-10-28)**:已完成,提交 `b18cd9e`。`requirements.txt`(flask==3.1.3,唯一第三方运行时依赖)+ `requirements-dev.txt`(pytest==9.1.1);CI 与 render.yaml 均改为引用清单。验证:全新 venv 按清单安装 → 28 项测试通过。
 
 - **证据**:仓库无 `requirements.txt`;CI 写死 `pip install flask pytest`,render.yaml 写死 `pip install flask`,均未固定版本(实测 flask 3.1.3 / pytest 9.1.1 / Python 3.10.11 本地,CI 用 3.11)。上游发版可能悄悄破坏构建。
 - **改法**:新增 `requirements.txt`(`flask==3.1.3`,注释说明为唯一第三方运行时依赖)+ `requirements-dev.txt`(`pytest==9.1.1`);CI 改为 `-r requirements.txt -r requirements-dev.txt`;render.yaml buildCommand 改 `pip install -r requirements.txt`。
 - **验证**:全新 venv 按清单安装 → `pytest tests/ -q` 142 passed → push 后 CI 绿;render 部署不在本轮,构建命令改动留待下次部署前实测。
 - **风险**:低;版本固定可能暴露 CI/本地版本差异(CI Python 3.11 vs 本地 3.10),若出现则以两端都能过的 flask 版本为准并记录。
 
-### T2 ☐ 密码强度基线校验
+### T2 ✅ 密码强度基线校验
 
-- **证据**:公网隧道实测可达登录页;审计确认注册/改密(`POST /api/setup`、`POST /api/account/password`)**无最小长度校验**(现状仅前端提示)。公网暴露面下这是最低成本的一道闸。
-- **改法**:服务端统一校验函数(≥8 位;其余规则保持宽松,避免过度设计),两处入口复用;错误信息中文、可操作。
-- **验证**:单测:7 位密码两入口均 400,8 位通过;存量账号不受影响(不改哈希、不强改密);全量回归无新失败。
-- **风险**:低;注意不锁死现有账号(只在设置新密码时校验)。
+- **状态(2026-10-28)**:已完成,提交 `e7cd54b`。
+- **证据更正**:基线初稿称"无最小长度校验"系误记——auth 层 `create_user`/`change_password` 实际已有 6 位下限,当时只检索了 server.py 端点层。任务据实缩小为:**下限 6→8 位**(`auth.MIN_PASSWORD_LEN` 常量,两入口复用),公网暴露面下的低成本加固。
+- **验证**:test_auth.py 11 passed。新增边界用例:7 位注册/改密均 400 且提示"至少 8 位",8 位通过;存量账号登录不受影响(仅设置新密码时校验);fixture 密码同步至 `secret123`。
 
-### T3 ☐ 启动时会话清扫
+### T3 ✅ 启动时会话清扫
 
-- **证据**:`auth.create_session` 写入时已过滤该用户的过期会话(实测确认),但历史遗留的过期 token 仍存于 `sessions.json`;公网环境下收敛暴露面。
-- **改法**:`main()` 启动流程中调用一次 `auth.purge_expired_sessions(store)`(新函数,纯删除过期项)。
-- **验证**:单测:插入过期+有效会话 → purge → 仅过期项被删;重启路径不破坏正常登录(现有会话测试全过)。
-- **风险**:极低。
+- **状态(2026-10-28)**:已完成,提交 `d3ee9af`。新增 `auth.purge_expired_sessions(store)`(幂等、空表安全,返回清扫数),挂入 `main()` 启动流程;test_auth.py 覆盖"过期删/有效留/幂等/空表"四断言。
 
 ## 验收门槛(每个任务共同)
 
@@ -57,3 +58,4 @@
 ## 变更记录
 
 - 2026-10-28:初版。T0 来自基线测试失败根因,T1-T3 来自 development_baseline.md 第 6 节。
+- 2026-10-28:T0-T3 执行完毕(`584e1d8`/`b18cd9e`/`e7cd54b`/`d3ee9af`),全量回归 **145 passed, 0 failed**(12 分 02 秒;基线时为 1 failed/141 passed,142→145 为新增边界/跨年/清扫用例)。基线恢复全绿。
