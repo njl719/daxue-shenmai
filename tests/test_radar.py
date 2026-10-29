@@ -283,6 +283,15 @@ def test_radar_reverify_dead_link_marks_expired(client, monkeypatch):
     assert store.load("radar")[0]["ctype"] == "expired"
 
 
+def test_auto_thread_guard_single_instance(client):
+    """T4:ensure_auto_thread 幂等——重复调用不叠加线程(开关即时生效用)。"""
+    th1 = R.ensure_auto_thread(client.store)
+    th2 = R.ensure_auto_thread(client.store)
+    assert th1 is th2  # 同一线程,循环内自会读取最新设置
+    assert th1.is_alive()
+    assert th1.daemon is True
+
+
 def test_unauthenticated_blocked(client):
     # 退出会话后,雷达接口必须 401
     client.store.save("sessions", [])

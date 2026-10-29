@@ -1935,6 +1935,9 @@ def create_app(data_dir=None, backup_dir=None):
             cfg["auto_refresh"] = bool(body["auto_refresh"])
         settings["radar"] = cfg
         store.save("settings", settings)
+        # 开关即时生效:开启且线程未启动时立刻拉起(不必重启服务)
+        if cfg.get("auto_refresh") and not os.environ.get("PYTEST_CURRENT_TEST"):
+            RADAR.ensure_auto_thread(store)
         return jsonify({"ok": True, "radar": cfg})
 
     # ---------- 成长时间线 ----------

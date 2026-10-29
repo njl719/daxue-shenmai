@@ -2380,7 +2380,7 @@ ROUTES.account = async () => {
         </select></label>`).join("")}</div>
       <label>修改密码</label>
       <div class="toolbar"><input id="pw-old" type="password" placeholder="原密码" style="flex:1;min-width:120px">
-      <input id="pw-new" type="password" placeholder="新密码(≥6位)" style="flex:1;min-width:120px">
+      <input id="pw-new" type="password" placeholder="新密码(≥8位)" style="flex:1;min-width:120px">
       <button id="pw-save">修改</button></div>
       <div class="toolbar" style="margin-top:10px"><button class="primary" id="acc-save">保存偏好</button></div>
       <h2>🔐 审计日志(最近)</h2>

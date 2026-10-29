@@ -16,6 +16,7 @@ import hashlib
 import html as _html
 import json
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -586,10 +587,13 @@ def refresh(store, settings, today=None, budget_s=90):
 
 # ---------------------------------------------------------------- 后台定时
 
+_auto_thread = None  # 模块级守卫:重复调用不叠加线程
+
+
 def start_auto_thread(store):
     """每 6 小时检查一次设置并刷新(启动 5 分钟后先跑一轮)。
     仅在用户开启 auto_refresh 且非测试环境由 server.main 调用。"""
-    import threading
+    global _auto_thread
 
     def loop():
         time.sleep(300)
@@ -605,7 +609,15 @@ def start_auto_thread(store):
 
     th = threading.Thread(target=loop, daemon=True, name="radar-auto")
     th.start()
+    _auto_thread = th
     return th
+
+
+def ensure_auto_thread(store):
+    """设置开关即时生效用:线程未启动才拉起,已启动则循环内自会读新设置。"""
+    if _auto_thread is None or not _auto_thread.is_alive():
+        return start_auto_thread(store)
+    return _auto_thread
 
 
 # ---------------------------------------------------------------- 过期标记
