@@ -4,6 +4,7 @@
 覆盖:检索→筛选→评分→入库→去重→过期→个性化→反馈→提交→API 端点。
 """
 import datetime
+import json
 
 import pytest
 
@@ -116,6 +117,8 @@ def mock_net(monkeypatch):
         calls["chsi"] += 1
         return [dict(c) for c in FAKE_CHSI]
 
+    monkeypatch.setattr(R, "search_github", lambda q: [])  # 测试隔离:不打真实 API
+
     def fake_http_text(url, proxy, timeout=12, data=None, referer=None):
         calls["pages"] += 1
         if "zhihu" in url:
@@ -163,8 +166,12 @@ def test_refresh_all_fail_keeps_data_and_records_reason(client, monkeypatch):
     def boom2(proxy):
         raise OSError("网络不可用")
 
+    def boom3(q):
+        raise OSError("网络不可用")
+
     monkeypatch.setattr(R, "search_ddg", boom)
     monkeypatch.setattr(R, "fetch_chsi", boom2)
+    monkeypatch.setattr(R, "search_github", boom3)
     monkeypatch.setattr(R.time, "sleep", lambda s: None)
     stats = R.refresh(store, {"radar": {"proxy": None, "max_queries": 2}})
     assert stats["candidates"] == 0
@@ -290,6 +297,62 @@ def test_auto_thread_guard_single_instance(client):
     assert th1 is th2  # 同一线程,循环内自会读取最新设置
     assert th1.is_alive()
     assert th1.daemon is True
+
+
+# ---------------- 新增数据源通道:GitHub / 站点索引 ----------------
+
+GH_FIXTURE = json.dumps({"items": [
+    {"full_name": "CodePanda66/CSPostgraduate-408",
+     "description": "408 考研复习笔记与真题整理",
+     "html_url": "https://github.com/CodePanda66/CSPostgraduate-408",
+     "stargazers_count": 1234,
+     "license": {"spdx_id": "MIT"},
+     "pushed_at": "2026-10-29T08:00:00Z"},
+]}).encode()
+
+
+def test_search_github_parse(monkeypatch):
+    monkeypatch.setattr(R, "_open", lambda url, proxy, timeout=12, data=None, referer=None: GH_FIXTURE)
+    out = R.search_github("考研 408")
+    assert len(out) == 1
+    it = out[0]
+    assert it["platform"] == "GitHub"
+    assert it["published_at"] == "2026-10-29"  # 真实更新日期,可进时间桶
+    assert "MIT" in it["snippet"] and "⭐1234" in it["snippet"]
+    assert "408" in it["title"]
+
+
+def test_platform_mapping_new_channels():
+    assert R.platform_of("https://github.com/a/b") == "GitHub"
+    assert R.platform_of("https://www.xiaohongshu.com/explore/1") == "小红书"
+    assert R.platform_of("https://www.douyin.com/video/2") == "抖音"
+
+
+def test_refresh_ingests_github_channel(client, monkeypatch):
+    monkeypatch.setattr(R.time, "sleep", lambda s: None)
+    monkeypatch.setattr(R, "search_ddg", lambda q, p, timeout=15: [])
+    monkeypatch.setattr(R, "fetch_chsi", lambda p: [])
+    monkeypatch.setattr(R, "search_github", lambda q: [
+        {"title": "a/b:408 笔记", "url": "https://github.com/a/b", "snippet": "⭐1",
+         "published_at": _T.isoformat(), "official": False, "platform": "GitHub",
+         "via_query": "github:考研 408"}])
+    stats = R.refresh(client.store, {"radar": {"proxy": None, "max_queries": 1}})
+    items = client.store.load("radar")
+    gh = [i for i in items if i["platform"] == "GitHub"]
+    assert stats["added"] == 1 and len(gh) == 1
+    assert gh[0]["verify_status"] == "api"  # 官方 API 元数据
+    assert any(q["q"].startswith("github:") and q["ok"] for q in stats["queries"])
+
+
+def test_site_channel_skips_honestly_without_proxy(client, monkeypatch):
+    monkeypatch.setattr(R.time, "sleep", lambda s: None)
+    monkeypatch.setattr(R, "search_ddg", lambda q, p, timeout=15: (_ for _ in ()).throw(AssertionError("不应发起")))
+    monkeypatch.setattr(R, "fetch_chsi", lambda p: [])
+    monkeypatch.setattr(R, "search_github", lambda q: [])
+    stats = R.refresh(client.store, {"radar": {"proxy": None, "max_queries": 1}})
+    skips = [q for q in stats["queries"] if "站点索引" in q["q"]]
+    assert len(skips) == 2  # 小红书+抖音
+    assert all(not q["ok"] and "未配置代理" in q["err"] for q in skips)
 
 
 def test_unauthenticated_blocked(client):

@@ -1613,7 +1613,7 @@ ROUTES.intel = async (sub) => {
 /* ================= 热点雷达(V3.1) ================= */
 const RADAR_CTYPES = { hot: "A·近期热点", exp: "B·真实经验", method: "C·学习方法",
   policy: "D·招生政策", mindset: "E·情绪压力", ai: "F·AI原创", warn: "G·警惕营销", expired: "H·已过期" };
-const VERIFY_LABEL = { verified_page: "已核验原文", snippet_only: "仅摘要·日期未核验", user_submitted: "用户提交·待核验" };
+const VERIFY_LABEL = { verified_page: "已核验原文", snippet_only: "仅摘要·日期未核验", user_submitted: "用户提交·待核验", api: "官方API元数据" };
 
 async function renderHot(host) {
   const q = new URLSearchParams(location.hash.split("?")[1] || "");

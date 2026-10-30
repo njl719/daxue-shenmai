@@ -36,6 +36,7 @@ SUBJECTS = ("math", "cs408", "english", "politics", "general")
 
 PLATFORMS = [
     ("chsi.com.cn", "研招网(官方)"), ("edu.cn", "高校官网(官方)"),
+    ("github.com", "GitHub"),
     ("gov.cn", "政府网站(官方)"), ("eol.cn", "中国教育在线"),
     ("xdf.cn", "新东方考研"), ("zhuanlan.zhihu.com", "知乎专栏"),
     ("zhihu.com", "知乎"), ("bilibili.com", "哔哩哔哩"),
@@ -144,6 +145,42 @@ CHSI_PAGES = [
     ("https://yz.chsi.com.cn/kyzx/kydt/", "考研资讯"),
     ("https://yz.chsi.com.cn/kyzx/policy/", "政策公告"),
 ]
+
+# GitHub 公开仓库检索(官方 API,直连无需代理;按天轮换避免重复)
+GITHUB_QUERIES = ["考研 408", "考研数学", "考研英语 真题", "计算机考研 复试",
+                  "考研政治", "考研 经验 贴", "考研 复习 资料"]
+
+
+def search_github(query, timeout=12):
+    """GitHub 官方 Search API(免 Key,10 次/分钟限速内使用)。
+    返回候选;published_at 取仓库 pushed_at(真实日期,可直接进时间桶)。"""
+    url = ("https://api.github.com/search/repositories?q=%s&sort=updated&per_page=6"
+           % urllib.parse.quote(query))
+    raw = _open(url, proxy=None, timeout=timeout)
+    data = json.loads(raw.decode("utf-8", "replace"))
+    out = []
+    for it in data.get("items") or []:
+        desc = (it.get("description") or "").strip()
+        stars = it.get("stargazers_count") or 0
+        license_ = ((it.get("license") or {}).get("spdx_id") or "未标许可")
+        pushed = (it.get("pushed_at") or "")[:10] or None
+        out.append({
+            "title": ("%s:%s" % (it.get("full_name", ""), desc))[:120].strip(": "),
+            "url": it.get("html_url", ""),
+            "snippet": "GitHub 仓库 · ⭐%d · 许可 %s · 最近更新 %s · %s"
+                       % (stars, license_, pushed or "未知", desc)[:300],
+            "published_at": pushed,
+            "official": False,
+            "platform": "GitHub",
+            "via_query": "github:" + query,
+        })
+    return out
+
+
+def search_ddg_site(site, query, proxy, timeout=15):
+    """站点限定检索:用公开搜索引擎的 site: 索引拿小红书/抖音公开帖子。
+    不登录、不绕过任何访问控制;拿不到就失败(调用方如实记账)。"""
+    return search_ddg("site:%s %s" % (site, query), proxy, timeout=timeout)
 
 
 def fetch_chsi(proxy):
@@ -463,6 +500,42 @@ def refresh(store, settings, today=None, budget_s=90):
         stats["queries"].append({"q": "研招网", "ok": False, "err": str(e)[:60]})
         stats["failed"] += 1
 
+    # GitHub 官方 API 通道(直连,无需代理;按天轮换 2 组)
+    day_ord = today.toordinal()
+    for i in range(2):
+        kw = GITHUB_QUERIES[(day_ord + i) % len(GITHUB_QUERIES)]
+        if time.time() - t0 > budget_s * 0.85:
+            break
+        try:
+            res = search_github(kw)
+            cands.extend(res)
+            stats["queries"].append({"q": "github:" + kw, "ok": True, "n": len(res)})
+        except Exception as e:
+            stats["queries"].append({"q": "github:" + kw, "ok": False, "err": str(e)[:60]})
+            stats["failed"] += 1
+        time.sleep(1.2)  # 官方限速 10 次/分钟,留余量
+
+    # 小红书/抖音公开索引通道:公开搜索引擎 site: 限定,不登录不绕过反爬。
+    # 依赖代理出境;未配置代理时如实跳过,绝不伪造"已抓取"。
+    sites = (("xiaohongshu.com", "小红书"), ("douyin.com", "抖音"))
+    for i, (site, name) in enumerate(sites):
+        if time.time() - t0 > budget_s:
+            break
+        if not proxy:
+            stats["queries"].append({"q": "%s站点索引" % name, "ok": False,
+                                     "err": "未配置代理,通道跳过(不伪造抓取)"})
+            stats["failed"] += 1
+            continue
+        kw = kws[i % len(kws)] if kws else "27考研 数学"
+        try:
+            res = search_ddg_site(site, kw, proxy)
+            cands.extend(res)
+            stats["queries"].append({"q": "site:%s %s" % (name, kw), "ok": True, "n": len(res)})
+        except Exception as e:
+            stats["queries"].append({"q": "site:%s" % name, "ok": False, "err": str(e)[:60]})
+            stats["failed"] += 1
+        time.sleep(2.0)
+
     stats["candidates"] = len(cands)
     if not cands:
         state["failure_reason"] = "本轮未取得任何候选(网络/代理不可用?)"
@@ -485,7 +558,9 @@ def refresh(store, settings, today=None, budget_s=90):
         enriched.append(c)
     ranked = sorted(enriched, key=lambda c: (
         c.get("official") is True, c["ctype"] not in ("warn",), len(c.get("snippet", ""))), reverse=True)
-    to_fetch = [c for c in ranked if not c.get("official")][:5]
+    # GitHub 条目不抓原文页:元数据(含真实 pushed_at 日期)已由官方 API 给出
+    to_fetch = [c for c in ranked
+                if not c.get("official") and c.get("platform") != "GitHub"][:5]
 
     for c in to_fetch:
         if time.time() - t0 > budget_s:
@@ -508,7 +583,12 @@ def refresh(store, settings, today=None, budget_s=90):
 
     for c in enriched:
         if c.get("verify_status") is None:
-            c["verify_status"] = "verified_page" if c.get("official") else "snippet_only"
+            if c.get("official"):
+                c["verify_status"] = "verified_page"
+            elif c.get("platform") == "GitHub":
+                c["verify_status"] = "api"  # 元数据来自官方 API(pushed_at 为真实日期)
+            else:
+                c["verify_status"] = "snippet_only"
         h = dedup_hash(c["url"], c["title"])
         if h in existing_hashes or any(i.get("dedup_hash") == h for i in new_items):
             stats["duplicates"] += 1

@@ -1770,7 +1770,7 @@ def create_app(data_dir=None, backup_dir=None):
         cutoff = (_today() - datetime.timedelta(days=days)).isoformat()
         out = [i for i in items
                if i.get("published_at") and i["published_at"] >= cutoff
-               and i.get("verify_status") in ("verified_page", "user_submitted")]
+               and i.get("verify_status") in ("verified_page", "user_submitted", "api")]
         return out
 
     @app.get("/api/radar")
@@ -1992,8 +1992,10 @@ def create_app(data_dir=None, backup_dir=None):
                         "max_queries": int(cfg.get("max_queries", 6)),
                         "auto_refresh": bool(cfg.get("auto_refresh", False)),
                         "channels": ["DuckDuckGo 公开搜索", "研招网官方列表",
-                                     "用户提交链接(抖音/小红书等仅此通道)"],
-                        "limits": "抖音/小红书无公开检索接口,不支持自动抓取,也不绕过其登录/反爬限制"})
+                                     "GitHub 官方 API(公开仓库,直连)",
+                                     "小红书/抖音:公开搜索引擎站点索引(需代理,不登录不绕过反爬)",
+                                     "用户提交链接"],
+                        "limits": "小红书/抖音无公开检索接口:通过搜索引擎 site: 索引获取公开帖子链接与摘要(标注'仅摘要·日期未核验'),不登录、不绕过任何访问控制;代理不可用时该通道如实报失败,不伪造抓取结果"})
 
     @app.post("/api/radar/settings")
     def radar_settings_post():
