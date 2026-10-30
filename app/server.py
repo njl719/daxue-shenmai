@@ -280,7 +280,23 @@ def create_app(data_dir=None, backup_dir=None):
         if len(remain) == len(items):
             return _bad("知识点不存在", 404)
         store.save("knowledge", remain)
-        return jsonify({"deleted": kid})
+        # 级联清理引用,防止错题/练习记录出现孤立知识点 ID
+        cleaned = {"mistakes": 0, "records": 0}
+        ms = store.load("mistakes")
+        for m in ms:
+            kds = m.get("knowledge_ids") or []
+            if kid in kds:
+                m["knowledge_ids"] = [k for k in kds if k != kid]
+                cleaned["mistakes"] += 1
+        store.save("mistakes", ms)
+        rcs = store.load("records")
+        for r in rcs:
+            kds = r.get("knowledge_ids") or []
+            if kid in kds:
+                r["knowledge_ids"] = [k for k in kds if k != kid]
+                cleaned["records"] += 1
+        store.save("records", rcs)
+        return jsonify({"deleted": kid} | cleaned)
 
     # ---------- mistakes ----------
     def _due_filter(ms, due):
@@ -322,6 +338,16 @@ def create_app(data_dir=None, backup_dir=None):
         if body.get("qtype") and QTYPES.get(body["subject"]) \
                 and body["qtype"] not in QTYPES[body["subject"]]:
             return _bad("该科目题型应为:%s" % "、".join(QTYPES[body["subject"]]))
+        raw_diff = body.get("difficulty")
+        if raw_diff in (None, ""):
+            difficulty = 3
+        else:
+            try:
+                difficulty = int(raw_diff)
+            except (TypeError, ValueError):
+                return _bad("difficulty 须为 1-5 的整数")
+            if not 1 <= difficulty <= 5:
+                return _bad("difficulty 须为 1-5 的整数")
         items = store.load("mistakes")
         item = {
             "id": _next_id(items, "mk"),
@@ -340,7 +366,7 @@ def create_app(data_dir=None, backup_dir=None):
             "error_reason": body.get("error_reason") or "",
             "solution_md": body.get("solution_md") or "",
             "source": body.get("source") or "",
-            "difficulty": int(body.get("difficulty") or 3),
+            "difficulty": difficulty,
             "reviews": [], "interval_days": 0, "ease": 2.5, "lapses": 0,
             "next_review": None, "archived": False, "seed": False,
             "created": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -491,6 +517,32 @@ def create_app(data_dir=None, backup_dir=None):
         body = request.get_json(force=True, silent=True) or {}
         if body.get("subject") not in SUBJECTS:
             return _bad("subject 必须是 %s" % (SUBJECTS,))
+        # 数值校验:非负整数,correct ≤ total;非法直接 400 而非 500
+        def _int_or_none(v):
+            if v is None or v == "":
+                return None
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                raise ValueError("not-int")
+        try:
+            total = _int_or_none(body.get("total"))
+            correct = _int_or_none(body.get("correct"))
+        except ValueError:
+            return _bad("total/correct 必须是整数")
+        total, correct = total or 0, correct or 0
+        if total < 0 or correct < 0:
+            return _bad("total/correct 不能为负数")
+        if correct > total:
+            return _bad("correct 不能大于 total")
+        duration = _int_or_none(body.get("duration_min"))
+        if duration is not None and duration < 0:
+            return _bad("duration_min 不能为负数")
+        date = body.get("date") or _today().isoformat()
+        try:
+            datetime.date.fromisoformat(date)
+        except ValueError:
+            return _bad("date 格式应为 YYYY-MM-DD")
         items = store.load("records")
         # 幂等:同一 client_id 直接返回既有记录,防止重复提交
         client_id = (body.get("client_id") or "").strip()
@@ -501,13 +553,13 @@ def create_app(data_dir=None, backup_dir=None):
         rec = {
             "id": _next_id(items, "rc"),
             "client_id": client_id,
-            "date": body.get("date") or _today().isoformat(),
+            "date": date,
             "subject": body["subject"],
             "session_type": body.get("session_type") or "practice",
             "knowledge_ids": body.get("knowledge_ids") or [],
-            "total": int(body.get("total") or 0),
-            "correct": int(body.get("correct") or 0),
-            "duration_min": body.get("duration_min"),
+            "total": total,
+            "correct": correct,
+            "duration_min": duration,
             "detail": body.get("detail") or [],
         }
         items.append(rec)
