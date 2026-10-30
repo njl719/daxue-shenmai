@@ -182,10 +182,10 @@ def _parse_json_loose(text):
 RECOGNIZE_PROMPT = """你是考研错题整理助手。请识别图片中的题目(可能包含手写解题过程和批注),输出 JSON:
 {
  "question_text": "题目的完整文字(数学公式用 LaTeX,如 $\\\\lim_{x\\\\to 0}$)",
- "subject": "math|cs408|english 之一",
+ "subject": "math|cs408|english|politics 之一",
  "chapter_guess": "推测的章节名",
  "knowledge_names": ["涉及的知识点,最多3个"],
- "qtype": "概念|计算|证明|综合应用|综合|定位错误|逻辑理解错误|词义误判|选项辨析错误 之一",
+ "qtype": "概念|计算|证明|综合应用|综合|选择|分析|定位错误|逻辑理解错误|词义误判|选项辨析错误 之一",
  "difficulty": 1到5的整数,
  "error_reason": "从这些里选最可能的一个:概念不清/公式或定理使用错误/计算失误/推导不严谨/建模或思路错误/审题错误/方法不熟练/时间分配不合理/知识遗忘/暂时无法判断",
  "solution_draft": "图中的正确解法或批注要点(若看不清写'看不清,需补充')",
@@ -218,6 +218,11 @@ def recognize_mistake(image_bytes, hint="", cfg=None, mime="image/jpeg"):
                 "error": "模型返回内容无法解析为 JSON,请重试或更换模型",
                 "data": _empty_recognition(hint)}
     data.setdefault("confidence", 0.5)
+    # 科目强制归一化为枚举:模型可能返回"数学/政治"等中文(否则 add_mistake 会 400)
+    raw_sub = str(data.get("subject") or "").strip().lower()
+    data["subject"] = _SUBJECT_NORMALIZE.get(
+        raw_sub, next((t for cn, t in _SUBJECT_NORMALIZE.items()
+                       if cn in raw_sub and len(raw_sub) <= 8), ""))
     data["needs_confirmation"] = True
     data["confidence"] = max(0.0, min(1.0, float(data["confidence"])))
     if data["confidence"] < 0.6:
@@ -261,6 +266,8 @@ _SUBJECT_NORMALIZE = {
     "408": "cs408", "计算机": "cs408", "数据结构": "cs408", "操作系统": "cs408",
     "组成原理": "cs408", "计算机组成原理": "cs408", "计算机网络": "cs408", "计网": "cs408",
     "cs408": "cs408", "英语": "english", "english": "english",
+    "政治": "politics", "politics": "politics", "马原": "politics",
+    "毛中特": "politics", "史纲": "politics", "思修": "politics", "时政": "politics",
 }
 # 中文数字时长兜底(模型可能返回"两个小时"或缺失)——复用文件头部的 _CN_NUM
 _KNOWN_TOPIC_KW = {
@@ -274,6 +281,8 @@ _KNOWN_TOPIC_KW = {
              "方差", "张宇", "660", "880", "1000题"],
     "english": ["阅读", "单词", "词汇", "作文", "长难句", "完形", "翻译", "精读",
                 "真题", "背词", "Text", "阅读理解"],
+    "politics": ["马原", "毛中特", "史纲", "思修", "时政", "肖四", "肖八", "客观题",
+                 "分析题", "多选", "单选", "政治", "矛盾", "认识论", "剩余价值"],
 }
 
 

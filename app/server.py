@@ -317,6 +317,12 @@ def create_app(data_dir=None, backup_dir=None):
             items = [m for m in items if m.get("subject") == subject]
         if qtype:
             items = [m for m in items if m.get("qtype") == qtype]
+        error_reason = request.args.get("error_reason")
+        if error_reason:
+            items = [m for m in items if m.get("error_reason") == error_reason]
+        kid = request.args.get("knowledge_id")
+        if kid:
+            items = [m for m in items if kid in (m.get("knowledge_ids") or [])]
         if q:
             items = [m for m in items if q in (m.get("question_md", "") +
                                                m.get("error_reason", "") +
@@ -721,6 +727,30 @@ def create_app(data_dir=None, backup_dir=None):
                     t["est_minutes"] = body["est_minutes"]
                 if action == "done":
                     t["status"] = "done"
+                    # 打通闭环:完成任务落一条学习记录(client_id 幂等,reset 再 done 不重复)。
+                    # total/correct 恒为 0 —— 不把"任务完成"虚构为"做题对错"。
+                    if not t.get("record_id") and t.get("subject") in SUBJECTS:
+                        rcs = store.load("records")
+                        client_id = "task-%s" % task_id
+                        hit = next((r for r in rcs
+                                    if r.get("client_id") == client_id), None)
+                        if not hit:
+                            payload = t.get("payload") or {}
+                            hit = {
+                                "id": _next_id(rcs, "rc"),
+                                "client_id": client_id,
+                                "date": date_str,
+                                "subject": t.get("subject") or "general",
+                                "session_type": "study_task",
+                                "knowledge_ids": payload.get("knowledge_ids") or [],
+                                "total": 0, "correct": 0,
+                                "duration_min": t.get("actual_minutes")
+                                                or t.get("est_minutes") or 0,
+                                "detail": [{"task_id": task_id, "title": t.get("title", "")}],
+                            }
+                            rcs.append(hit)
+                            store.save("records", rcs)
+                        t["record_id"] = hit["id"]
                 elif action == "skip":
                     t["status"] = "skipped"
                 elif action == "reset":
