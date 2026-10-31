@@ -15,7 +15,7 @@ import os
 from .storage import Store
 
 MIGRATIONS = []
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 POLITICS_TRACK = {
     "name": "思想政治理论(101)", "subject": "politics",
@@ -122,6 +122,53 @@ def _v5_to_v6(store):
         settings["radar"] = {"proxy": "http://127.0.0.1:7897", "max_queries": 6}
         store.save("settings", settings)
     return "v5→v6 完成:热点雷达数据层初始化"
+
+
+@migration(6)
+def _v6_to_v7(store):
+    """v6→v7:统一来源字段标准(数据真实性审查)。
+    只补位缺失字段,一律默认空/None —— 不填任何编造值;已有同义字段保持兼容。
+    映射见 docs/data_audit_report.md §三。"""
+    n = {"unis": 0, "qs": 0, "mo": 0, "ep": 0}
+    unis = store.load("universities")
+    for u in unis:
+        if "source_url" not in u:
+            u["source_url"] = ""          # 招生事实来源链接,空=未核验
+            u["updated_at"] = None
+            u["source_type"] = "official_pending"
+            n["unis"] += 1
+    store.save("universities", unis)
+    qs = store.load("questions")
+    for q in qs:
+        if "source_name" not in q:
+            q["source_name"] = q.get("source_desc", "")
+            q["source_url"] = ""          # 真题原文链接,核验前为空
+            q["published_at"] = (str(q["year"]) if q.get("year") else None)
+            q["verified_at"] = None
+            q["updated_at"] = None
+            n["qs"] += 1
+    store.save("questions", qs)
+    mos = store.load("motivations")
+    for m in mos:
+        if "source_type" not in m:
+            lic = m.get("license") or ""
+            m["source_type"] = {"公版古籍": "public_classic",
+                                "平台原创": "platform_original"}.get(
+                lic, "unverified" if "待核验" in lic else "user_note")
+            m.setdefault("source_url", "")
+            m.setdefault("updated_at", None)
+            n["mo"] += 1
+    store.save("motivations", mos)
+    eps = store.load("experience_posts")
+    for p in eps:
+        if "source_type" not in p:
+            p["source_type"] = ("public_experience" if p.get("url")
+                                else "platform_original")
+            p.setdefault("updated_at", None)
+            n["ep"] += 1
+    store.save("experience_posts", eps)
+    return ("v6→v7 完成:统一来源字段补位(院校 %d/题目 %d/语录 %d/经验帖 %d,"
+            "全部默认未核验)") % (n["unis"], n["qs"], n["mo"], n["ep"])
 
 
 def run_migrations(store):

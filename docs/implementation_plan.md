@@ -122,6 +122,13 @@
 - 已知问题(记入待办候选 N4):测试夹具经迁移链触发 Wikimedia 图片抓取,无代理时每夹具超时拖慢套件(单文件 3-64 分钟),CI 不受影响但本地迭代慢,值得后续治理。
 - **本轮验证策略**:本地全量套件因上述已知问题在无代理环境过慢(预计 2 小时+),经权衡跳过本地全量,以定向测试(通道相关 21 项全绿)+ **CI 全量套件作为权威门禁**(push 后确认)。
 
+## 第五阶段(2026-10-31):数据真实性与架构审查
+
+报告:`docs/data_audit_report.md`(五分类总表 + 四大输出 + 三层同步架构)。结论:**无事实数据伪装真实**;实锤修复两项:
+- **F-A** 复试线来源强制(原只查年份,违反"分数线须可追溯"红线);
+- **迁移 v6→v7**:统一来源字段标准落地(universities/questions/motivations/experience_posts 补 source_name/source_url/source_type/published_at/updated_at/verified_at,全部默认空/未核验,零编造);写路径(motivations/experience/questions)同步带上来源字段。
+- 测试:新增 test_data_audit.py 3 项;全量 **168 passed in 3 分 25 秒**(N4 治理后本地全量恢复常态)。
+
 ## 变更记录
 
 - 2026-10-28:初版。T0 来自基线测试失败根因,T1-T3 来自 development_baseline.md 第 6 节。

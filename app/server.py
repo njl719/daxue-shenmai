@@ -1404,8 +1404,10 @@ def create_app(data_dir=None, backup_dir=None):
                 "rating": body.get("rating"),
                 "favorite": bool(body.get("favorite")),
                 "verify_status": "待核验" if url else "个人笔记",
+                "source_type": "public_experience" if url else "platform_original",
                 "last_checked": None,
-                "created": datetime.datetime.now().isoformat(timespec="seconds")}
+                "created": datetime.datetime.now().isoformat(timespec="seconds"),
+                "updated_at": None}
         items.append(item)
         store.save("experience_posts", items)
         return jsonify(item), 201
@@ -1496,14 +1498,17 @@ def create_app(data_dir=None, backup_dir=None):
                 for f in EDITABLE:
                     if f in body:
                         u[f] = body[f]
-                # 年份与数字绑定校验:填了人数/分数线必须同年份+来源
+                # 年份与数字绑定校验:填了人数/分数线必须同年份+来源(可追溯红线)
                 for num, yr in (("enrollment", "enrollment_year"),
                                 ("retest_line", "retest_line_year")):
                     if u.get(num) and not u.get(yr):
                         return _bad("填写%s时必须同时填写对应年份(%s)" % (num, yr))
                 if u.get("enrollment") and not u.get("admission_source"):
                     return _bad("填写招生人数时必须填写数据来源(admission_source)")
+                if u.get("retest_line") and not u.get("admission_source"):
+                    return _bad("填写复试线时必须填写数据来源(admission_source)")
                 u["last_verified"] = datetime.datetime.now().isoformat(timespec="seconds")                     if body.get("mark_verified") else u.get("last_verified")
+                u["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
                 u["data_status"] = body.get("data_status") or u.get("data_status")
                 store.save("universities", items)
                 auth_mod.audit(store, "university_updated", uid)
@@ -1745,12 +1750,17 @@ def create_app(data_dir=None, backup_dir=None):
         if not (body.get("text") or "").strip():
             return _bad("内容必填")
         items = store.load("motivations")
+        license_ = body.get("license") or "自述/公共领域"
+        stype = {"公版古籍": "public_classic", "平台原创": "platform_original"}.get(
+            license_, "来源待核验" if "待核验" in license_ else "user_note")
         item = {"id": _next_id(items, "mo"), "type": body.get("type") or "quote",
                 "title": (body.get("title") or "").strip()[:60],
                 "text": body["text"].strip(), "author": body.get("author") or "",
                 "source_url": body.get("source_url") or "",
-                "license": body.get("license") or "自述/公共领域",
+                "license": license_,
+                "source_type": stype,
                 "created": datetime.datetime.now().isoformat(timespec="seconds"),
+                "updated_at": None,
                 "verified": False}
         items.append(item)
         store.save("motivations", items)

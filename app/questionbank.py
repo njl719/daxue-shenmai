@@ -92,4 +92,6 @@ def new_question_record(q, seq):
         "copyright_status", "ai_generated", "options", "answer",
         "solution_md", "source_desc", "knowledge_ids", "difficulty",
         "content_hash")},
-        "created": now, "archived": False}
+        "source_name": q.get("source_desc", ""),
+        "source_url": "", "verified_at": None,
+        "created": now, "updated_at": None, "archived": False}
