@@ -649,6 +649,7 @@ async function renderMistakes(host) {
     html += `<div class="item" data-id="${m.id}">
       <div class="head">${m.image ? `<img class="thumb" src="/api/images/${esc(m.image)}" loading="lazy">` : ""}
       <div style="flex:1;min-width:0"><b>${esc((m.question_md || "(仅图片)").split("\n")[0].slice(0, 60))}</b>
+      ${m.seed ? '<span class="tag gray" title="系统自带示例,可在详情删除">示例</span>' : ""}
       ${m.needs_confirmation ? '<span class="tag orange">需确认</span>' : ""}
       <div class="sub">原因:${esc(m.error_reason || "—")} · 已忘 ${m.lapses || 0} 次 · ${due ? "<span style='color:var(--red)'>已到期</span>" : m.next_review}</div></div>
       <span><span class="tag ${SUBJECT_TAG[m.subject]}">${SUBJECTS[m.subject]}</span>
@@ -1974,7 +1975,8 @@ async function renderExperience(host) {
       <div class="head"><div style="min-width:0"><b>${p.favorite ? "⭐ " : ""}${esc(p.title)}</b>
         <div class="sub">${esc(p.platform || "自记")}${p.author ? " · " + esc(p.author) : ""}${p.published ? " · " + esc(p.published) : ""}
         ${p.url ? ' · <a href="' + esc(p.url) + '" target="_blank" rel="noopener">原文 ↗</a>' : ""}</div></div>
-        <span><span class="tag ${p.verify_status.includes("可访问") || p.verify_status.includes("原创") ? "green" : p.verify_status.includes("无法") ? "red" : "amber"}">${esc(p.verify_status)}</span></span></div>
+        <span>${p.source_type === "platform_original" ? '<span class="tag blue">平台原创·非真实博主经验</span>' : ""}
+        <span class="tag ${p.verify_status.includes("可访问") || p.verify_status.includes("原创") ? "green" : p.verify_status.includes("无法") ? "red" : "amber"}">${esc(p.verify_status)}</span></span></div>
       <div style="font-size:13.5px;margin-top:6px">${esc(p.summary)}</div>
       ${(p.categories || []).map(c => '<span class="tag gray">' + esc(c) + "</span>").join(" ")}
       ${p.methods ? '<div class="sub" style="margin-top:4px">方法:' + esc(p.methods) + "</div>" : ""}
@@ -2080,6 +2082,12 @@ async function renderSchools(host) {
   const starred = items.filter(u => u.priority > 0);
   let html = `<div class="infobox"><span class="sysdot on"></span>院校资料库:${items.length} 所候选 ·
     图片仅采用 <b>Wikimedia Commons 自由许可</b>资源并记录来源;招生人数/复试线必须绑定年份与来源,未核验一律标注「待核实」。</div>
+  <div class="card" style="margin-bottom:16px"><h2>🏛️ 官方招生数据(按年份分档,S 级来源)</h2>
+    <div class="toolbar" style="flex-wrap:wrap;gap:8px">
+      <select id="adm-uni">${items.map(u => `<option value="${esc(u.id)}">${esc(u.name)}</option>`).join("")}</select>
+      <select id="adm-year">${[2028, 2027, 2026].map(y => `<option value="${y}">${y} 年</option>`).join("")}</select>
+      <button id="adm-load" class="btn">载入分档</button></div>
+    <div id="adm-form" class="muted" style="padding:8px 0">选择院校与年份后载入。事实数字必须填来源;2028 档在官方发布前显示「官方未公开」。</div></div>
   ${goals.institution ? `<div class="target-hero" style="margin-bottom:16px">
     <div class="th-img">${uniImg(items.find(u => u.name === goals.institution), "fallback-svg")}</div>
     <div class="th-body"><h3 style="margin:0 0 4px">🎯 ${esc(goals.institution)}${goals.program ? " · " + esc(goals.program) : ""}</h3>
@@ -2165,6 +2173,47 @@ async function renderSchools(host) {
       closeModal(); toast("已添加"); renderSchools(host);
     };
   };
+  // ---- 官方招生分档录入(V2.0 模块一) ----
+  const loadAdm = async () => {
+    const uid = $("#adm-uni").value, year = $("#adm-year").value;
+    const d = await api("/admission/records?uni_id=" + uid + "&year=" + year);
+    const r = (d.items || [])[0];
+    const u = items.find(x => x.id === uid);
+    const f = $("#adm-form");
+    if (!r) { f.innerHTML = '<span class="muted">无分档记录</span>'; return; }
+    f.innerHTML = `<div class="form-grid" style="margin-top:6px">
+      <div><label>专业名称(以当年目录为准)</label><input id="ad-mj" value="${esc(r.major_name || "")}" placeholder="官方未公开则留空"></div>
+      <div><label>招生计划(人)</label><input id="ad-plan" type="number" value="${r.plan_total ?? ""}"></div>
+      <div><label>推免人数(如有公开)</label><input id="ad-tm" type="number" value="${r.tuimian ?? ""}"></div>
+      <div><label>统考招生(如有公开)</label><input id="ad-tk" type="number" value="${r.tongkao ?? ""}"></div>
+      <div><label>是否 408</label><select id="ad-408"><option value="">官方未公开</option>
+        <option value="true" ${r.uses_408 === true ? "selected" : ""}>是</option>
+        <option value="false" ${r.uses_408 === false ? "selected" : ""}>否</option></select></div>
+      <div><label>复试线(总分)</label><input id="ad-line" type="number" value="${r.retest_line ?? ""}"></div>
+      <div style="grid-column:span 2"><label>复试科目</label><input id="ad-rsub" value="${esc(r.retest_subjects || "")}"></div>
+      <div style="grid-column:span 2"><label>官方公告/目录链接</label><input id="ad-ann" value="${esc(r.announcement_url || u.official_site || "")}" placeholder="研招网或研究生院官网"></div>
+      <div style="grid-column:span 2"><label>来源名称 *</label><input id="ad-srcn" value="${esc(r.source_name || "")}" placeholder="如:xx大学研究生院 2027 招生简章"></div>
+      <div style="grid-column:span 2"><label>来源链接 *</label><input id="ad-srcu" value="${esc(r.source_url || "")}" placeholder="https://..."></div>
+      <div style="grid-column:span 3"><label style="display:flex;gap:6px;align-items:center">
+        <input type="checkbox" id="ad-verified"> 我已对照官方原文核验(标记为 S 级)</label></div></div>
+    <div class="muted" style="font-size:12.5px;margin:6px 0">当前状态:${esc(r.data_status)} · 采集 ${esc((r.collected_at || "").slice(0, 10))} · 核验:${r.verified_at ? "已核验" : "未核验"} · ${r.year === 2028 ? "2028 官方尚未发布,历史数据不能冒充" : ""}</div>
+    <button class="primary" id="ad-save">保存分档</button>`;
+    $("#ad-save").onclick = async () => {
+      const num = id => { const v = $("#" + id).value; return v === "" ? null : +v; };
+      try {
+        await api("/admission/records/" + r.id, { method: "PUT", body: JSON.stringify({
+          major_name: $("#ad-mj").value, plan_total: num("ad-plan"),
+          tuimian: num("ad-tm"), tongkao: num("ad-tk"),
+          uses_408: $("#ad-408").value === "" ? null : $("#ad-408").value === "true",
+          retest_line: num("ad-line"), retest_subjects: $("#ad-rsub").value,
+          announcement_url: $("#ad-ann").value,
+          source_name: $("#ad-srcn").value, source_url: $("#ad-srcu").value,
+          mark_verified: $("#ad-verified").checked }) });
+        toast("分档已保存(变更已留痕)"); loadAdm();
+      } catch (e) { toast(e.message, "err"); }
+    };
+  };
+  $("#adm-load").onclick = loadAdm;
 }
 
 function uniImg(u, extraCls) {
