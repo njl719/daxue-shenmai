@@ -55,59 +55,8 @@ def test_task_done_links_duration(client):
 
 # ---------------- L2 政治科目(11408)OCR/提取支持 ----------------
 
-def test_recognition_normalizes_chinese_subject(monkeypatch):
-    """模型返回中文科目名时,识别结果必须归一化为枚举(否则保存 400)。"""
-    monkeypatch.setattr(AI, "_post_chat", lambda cfg, msgs, timeout=90, json_mode=False:
-                        (json.dumps({"question_text": "实践是检验真理的唯一标准",
-                                     "subject": "政治", "chapter_guess": "马原",
-                                     "knowledge_names": ["认识论"], "qtype": "选择",
-                                     "difficulty": 2, "error_reason": "概念不清",
-                                     "solution_draft": "", "user_work_seen": "",
-                                     "confidence": 0.8, "notes": ""}), None))
-    monkeypatch.setattr(AI, "get_ai_config",
-                        lambda s: {"available": True, "model": "m", "vision_model": "m",
-                                   "base_url": "http://x", "api_key": "k"})
-    out = AI.recognize_mistake(b"img", "政治选择题", {"available": True, "model": "m"})
-    assert out["ok"] is True
-    assert out["data"]["subject"] == "politics"
-    assert out["data"]["needs_confirmation"] is True
-
-
-def test_recognition_unknown_subject_left_blank(monkeypatch):
-    monkeypatch.setattr(AI, "_post_chat", lambda cfg, msgs, timeout=90, json_mode=False:
-                        (json.dumps({"question_text": "?", "subject": "农学",
-                                     "confidence": 0.5}), None))
-    monkeypatch.setattr(AI, "get_ai_config",
-                        lambda s: {"available": True, "model": "m", "vision_model": "m",
-                                   "base_url": "http://x", "api_key": "k"})
-    out = AI.recognize_mistake(b"img", "", {"available": True, "model": "m"})
-    assert out["data"]["subject"] == ""  # 无法归一化就置空,不猜
-
-
 def test_reflection_normalizes_politics():
     out = AI.normalize_extraction(
         {"subjects": ["政治"], "knowledge_names": ["肖四马原部分"], "minutes": 60})
     assert "politics" in out["subjects"]
 
-
-def test_recognize_prompt_includes_politics():
-    assert "politics" in AI.RECOGNIZE_PROMPT
-    assert "选择|分析" in AI.RECOGNIZE_PROMPT
-
-
-# ---------------- L3 错题检索过滤 ----------------
-
-def test_mistake_filters_error_reason_and_knowledge(client):
-    kid = client.post("/api/knowledge", json={
-        "subject": "math", "name": "过滤测试点"}).get_json()["id"]
-    m1 = client.post("/api/mistakes", json={
-        "subject": "math", "question_md": "题A", "knowledge_ids": [kid],
-        "error_reason": "计算失误"}).get_json()
-    m2 = client.post("/api/mistakes", json={
-        "subject": "math", "question_md": "题B", "error_reason": "概念不清"}).get_json()
-    r = client.get("/api/mistakes?error_reason=计算失误").get_json()
-    assert [m["id"] for m in r] == [m1["id"]]
-    r = client.get("/api/mistakes?knowledge_id=" + kid).get_json()
-    assert [m["id"] for m in r] == [m1["id"]]
-    r = client.get("/api/mistakes?error_reason=不存在的原因").get_json()
-    assert r == []

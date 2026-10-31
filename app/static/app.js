@@ -122,21 +122,9 @@ function navigate() {
     $("#view").innerHTML = '<div class="card" style="color:var(--red)">加载失败:' + esc(err.message) +
       '<br><span class="muted">请确认服务已启动:在个人平台目录运行 <code>python run.py</code></span></div>';
   });
-  if (view !== "login" && view !== "setup") refreshDueBadge();
 }
 window.addEventListener("hashchange", navigate);
 
-async function refreshDueBadge() {
-  try {
-    const s = await api("/practice/session");
-    const n = s.due_mistakes.length + s.due_vocab.length;
-    const el = $("#nav-due");
-    el.textContent = n ? "待刷 " + n : "已清空 ✓";
-    el.classList.toggle("zero", !n);
-  } catch (e) { /* 未登录/离线时静默 */ }
-}
-
-/* ================= 登录 / 初始化 ================= */
 ROUTES.login = async () => {
   $("#view").innerHTML = '<div class="quiz-wrap" style="max-width:420px;margin-top:9vh">'
     + '<div class="card quiz-card" style="text-align:center">'
@@ -180,141 +168,41 @@ ROUTES.setup = async () => {
 
 /* ================= 今日作战室 ================= */
 ROUTES.home = async () => {
-  const [session, prof, plan, goals, motivation, catalog, settings, unis, timeline] = await Promise.all([
-    api("/practice/session"), api("/profile"), api("/plan/day/" + todayStr()),
-    api("/goals"), api("/motivation/daily"), api("/catalog"), api("/settings"),
-    api("/universities"), api("/growth/timeline"),
-  ]);
-  const phase = session.exam_phase;
-  const due = session.due_mistakes.length + session.due_vocab.length;
-  const topWeak = (prof.weak_points || []).slice(0, 4);
-  const verified = (prof.weak_points || []).filter(w => w.status === "confirmed").length;
+  const [persona, plan, brief] = await Promise.all([
+    api("/persona"), api("/plan/day/" + todayStr()), api("/radar/home")]);
+  const daysLeft = persona.exam_phase_days;
   const doneToday = (plan.tasks || []).filter(t => t.status === "done").length;
-  const nextTask = (plan.tasks || []).find(t => t.status === "pending");
-  const inst = goals.institution;
-
-  // 连续学习天数:从真实活动日期倒推
-  const activeDays = new Set(timeline.map(d => d.date).filter(Boolean));
-  let streak = 0;
-  for (let i = 0; ; i++) {
-    const ds = todayStr(-i);
-    if (activeDays.has(ds)) streak++;
-    else if (i > 0 || !activeDays.has(todayStr())) break;
-    else break;
-  }
-  const targetUni = goals.institution
-    ? unis.find(u => u.name === goals.institution) : (unis[0] || null);
-  const week = (prof.trend_14d || []).slice(-7);
-  const weekTotal = week.reduce((a, t) => a + t.total, 0);
-  const weekCorrect = week.reduce((a, t) => a + t.correct, 0);
-  const weekAcc = weekTotal ? Math.round(100 * weekCorrect / weekTotal) : null;
-  let html = `
-  <section class="hero">
-    <div class="hero-badge"><span class="dot"></span>${esc(goals.institution || "目标院校待设定")} · ${phase ? esc(phase.phase) + " · 距考试 " + phase.days_left + " 天" : "备考阶段未设(确认考试日期后自动划分)"}</div>
-    <h1>${due ? "今天有 <span class='h1-accent'>" + due + " 项</span>到期待复测" : "今天适合推进薄弱专项"}</h1>
-    <p class="hero-desc"><span id="hero-quote">${motivation.quote.text}</span>
-      ${motivation.growth_note ? "<br><span style='color:#E5C88F'>🏆 " + esc(motivation.growth_note) + "</span>" : ""}</p>
+  const pct = plan.tasks.length ? Math.round(100 * doneToday / plan.tasks.length) : 0;
+  let html = `<section class="hero">
+    <div class="hero-badge"><span class="dot"></span>${persona.exam_year || 2028} 考研 · 11408 方案
+      ${daysLeft != null ? " · 距考约 <b>" + daysLeft + "</b> 天" : ""}</div>
+    <h1>${pct >= 80 ? "今天的状态很好,继续保持" : "先把今日计划推进完"}</h1>
+    <p class="hero-desc">计划完成率 <b>${pct}%</b>(${doneToday}/${plan.tasks.length})
+      ${brief && brief.found ? " · 最新动态:<a href='#intel/hot'>" + esc(brief.found.title.slice(0, 24)) + "…</a>" : ""}</p>
     <div class="hero-actions">
-      <a class="hero-cta" href="#study/train">🎯 每日训练(20 题)
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 8h10M9 4l4 4-4 4"/></svg></a>
-      <a class="hero-ghost" href="#study/practice">间隔刷题(${due} 到期)</a>
-      <a class="hero-ghost" href="#study/mistakes">📷 拍照录错题</a>
-      <a class="hero-ghost" href="#coach">与教练反思</a>
-    </div>
-  </section>
+      <a class="hero-cta" href="#decision">🎯 智能择校</a>
+      <a class="hero-ghost" href="#exp">📰 经验贴</a>
+      <a class="hero-ghost" href="#plan">今日计划</a>
+      <a class="hero-ghost" href="#intel/schools">院校库</a>
+    </div></section>
   <div class="stats-band stagger">
-    <div class="stat-cell"><div class="stat-num">${due}</div><div class="stat-label">今日到期(错题+生词)</div></div>
-    <div class="stat-cell"><div class="stat-num">${doneToday}</div><div class="stat-label">今日已完成任务</div></div>
-    <div class="stat-cell"><div class="stat-num">${streak}<span style="font-size:14px"> 天</span></div><div class="stat-label">连续学习天数${streak === 0 ? "(今天开始)" : ""}</div></div>
-    <div class="stat-cell"><div class="stat-num">${Object.values(prof.subjects).reduce((a, s) => a + (s.minutes || 0), 0)}<span style="font-size:14px"> 分</span></div><div class="stat-label">累计有效学习时长</div></div>
-  </div>
-  ${targetUni ? `<div class="target-hero" style="margin:-20px 0 20px">
-    <div class="th-img">${uniImg(targetUni, "fallback-svg")}</div>
-    <div class="th-body">
-      <h3 style="margin:0 0 6px;font-family:var(--font-serif)">${goals.institution ? "🎯 " + esc(targetUni.name) : "🏫 候选:" + esc(targetUni.name)}
-        <span class="tag ${targetUni.completeness >= 60 ? "green" : "amber"}">资料完整度 ${targetUni.completeness}%</span></h3>
-      <div class="muted" style="font-size:13px">${esc(targetUni.city || "")} · ${esc(targetUni.cs_school || "院系待补")}
-        ${targetUni.uses_408 === true ? ' · <span class="tag green">408</span>' : ""}
-        ${targetUni.last_verified ? ' · <span class="tag green">核验 ' + esc(targetUni.last_verified.slice(0, 10)) + "</span>" : ' · <span class="tag amber">招生数据待核实</span>'}</div>
-      <div class="toolbar" style="margin:10px 0 0">
-        <a class="btn" href="#intel/schools">院校资料库(${unis.length} 所) →</a>
-        ${verified ? '<span class="muted">薄弱点 ' + verified + ' 个(下方有证据链)</span>' : ""}</div>
-    </div></div>` : ""}
-  <div class="card"><h2>四科状态(默认 11408 方案,可在个人中心调整)</h2>
-    <div class="row2" style="grid-template-columns:repeat(4,1fr)">${["math", "cs408", "english", "politics"].map(sub => {
-      const track = Object.values(catalog.tracks || {}).find(t => t.subject === sub);
-      const p = track && track.progress ? track.progress : { pct: 0, started: 0, knowledge: 0 };
-      const acc = (prof.subjects[sub] || {}).accuracy;
-      const enabled = sub === "politics" ? (settings.subjects.politics || {}).enabled !== false && (settings.subjects.politics || {}).enabled : true;
-      const polOff = sub === "politics" && !(settings.subjects.politics || {}).enabled;
-      return `<div class="stat-cell" style="padding:14px 16px"><b>${SUBJECTS[sub]}</b>
-        ${polOff ? '<span class="tag gray">未启用</span>' : ""}
-        <div class="progress-track" style="margin:8px 0 4px"><div class="progress-fill" style="width:${p.pct}%"></div></div>
-        <div class="muted">知识点进度 ${p.pct}%(${p.started}/${p.knowledge})· 正确率 ${acc == null ? "—" : acc + "%"}</div></div>`;
-    }).join("")}</div></div>
-  <div class="card donut-wrap"><svg class="donut" width="74" height="74" viewBox="0 0 74 74" role="img" aria-label="今日任务完成进度">
-      <circle class="bg" cx="37" cy="37" r="30"></circle>
-      <circle class="fg" cx="37" cy="37" r="30" stroke-dasharray="${(2 * Math.PI * 30).toFixed(1)}" stroke-dashoffset="${(2 * Math.PI * 30 * (1 - (plan.tasks.length ? doneToday / plan.tasks.length : 0))).toFixed(1)}"></circle>
-    </svg>
-    <div><div class="donut-label">${plan.tasks.length ? Math.round(100 * doneToday / plan.tasks.length) : 0}%</div>
-    <div class="stat-label">今日任务完成进度(${doneToday}/${plan.tasks.length})</div></div></div>`;
+    <div class="stat-cell"><div class="stat-num">${pct}<span style="font-size:14px">%</span></div>
+      <div class="stat-label">今日计划完成率</div></div>
+    <div class="stat-cell"><div class="stat-num">${daysLeft != null ? daysLeft : "—"}</div>
+      <div class="stat-label">距考天数(${persona.exam_year || 2028})</div></div>
 
-  if (nextTask) {
-    html += `<div class="card" style="border-left:3px solid var(--gold)">
-      <h2>🎯 下一项最值得完成的任务</h2>
-      <div style="font-size:15px"><b>${esc(nextTask.title)}</b> <span class="tag gray">≈${nextTask.est_minutes} 分钟</span></div>
-      ${nextTask.reason ? '<div class="muted" style="margin-top:4px">💡 ' + esc(nextTask.reason) + "</div>" : ""}
-      ${nextTask.standard ? '<div style="font-size:13px;color:var(--green);margin-top:4px">✔ 完成标准:' + esc(nextTask.standard) + "</div>" : ""}
-      <div class="toolbar" style="margin:10px 0 0"><a class="btn primary" href="#study/practice">去做</a> <a class="btn" href="#plan">查看全部计划</a></div></div>`;
-  }
-
-  html += `<div class="row2">
-    <div class="card"><h2>今日作战清单</h2>
-      <div class="toolbar" style="margin-bottom:6px"><button class="primary" id="home-gen">生成 / 刷新</button>
-      <span class="muted">已完成 ${doneToday} / ${(plan.tasks || []).length}</span></div>
-      <div id="home-tasks">${renderTaskList(plan.tasks, true) || '<span class="muted">点击生成任务,或直接去刷题处理到期内容。</span>'}</div></div>
-    <div class="card"><h2>最薄弱的地方</h2>`;
-  html += topWeak.length ? topWeak.map(w => {
-    const st = WP_STATUS[w.status] || WP_STATUS.unverified;
-    return `<div class="wp-card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-      <b>${esc(w.name)}</b><span class="tag ${st[1]}">${st[0]}</span></div>
-      <div class="muted">${esc(w.judgment)}${w.trend ? " · " + esc(w.trend) : ""}</div>
-      <div class="act">${esc(w.recommended_action || "")}</div></div>`;
-  }).join("") : '<span class="muted">暂无判断 —— 录入错题并复测后,系统基于证据给出薄弱点,不凭空贴标签。</span>';
-  html += `</div></div>
+    <div class="stat-cell"><div class="stat-num">${persona.directions ? persona.directions.length : 0}</div>
+      <div class="stat-label">目标方向</div></div>
+    <div class="stat-cell"><div class="stat-num">${(brief.top || {}).items ? brief.top.items.length : 0}</div>
+      <div class="stat-label">近期情报条数</div></div></div>
   <section class="radar-zone" id="home-radar"><div class="section-label">RADAR · 今日考研雷达</div>
-    <div class="muted" style="margin:8px 0 14px">近期真实考研动态 + 基于你真实学习记录的行动建议。内容来自公开检索与官方公告,每条带来源与时间;<a href="#intel/hot">进入热点雷达 →</a></div>
-    <div class="radar-grid" id="radar-cards"><div class="muted">雷达加载中…</div></div></section>
-  <div class="row2">
-  <div class="card"><h2>🕘 最近学习记录</h2><div id="home-recent">加载中…</div></div>
-  <div class="card"><h2>📊 本周学习趋势</h2>${weekTrend(prof.trend_14d || [])}
-    <p class="muted" style="margin-bottom:0">近 7 天做题 ${weekTotal} 题${weekTotal ? " · 正确率 " + weekAcc + "%" : " · 做第一组题后这里会有真实趋势"}</p></div></div>
-  <div class="card"><h2>建议依据</h2><div style="font-size:13.5px">
-    · 到期错题 ${session.due_mistakes.length} 条按遗忘曲线安排<br>
-    ${(prof.error_patterns || []).slice(0, 2).map(p => "· 近期高频错误模式:「" + esc(p.reason) + "」×" + p.count + "<br>").join("")}
-    ${(prof.data_gaps || []).slice(0, 2).map(g => "<span class='muted'>· " + esc(g) + "</span><br>").join("")}
-    <a href='#profile'>完整画像 →</a> <a href='#growth'>成长时间线 →</a></div></div>`;
+    <div class="muted" style="margin:8px 0 14px">重要提醒与近期动态,全部来自公开检索与官方公告;<a href="#intel/hot">进入考研热点 →</a></div>
+    <div class="radar-grid" id="radar-cards"><div class="muted">雷达加载中…</div></div></section>`;
   $("#view").innerHTML = html;
   typeset($("#view"));
   renderHomeRadar();
-  $("#home-gen").onclick = async () => {
-    await api("/plan/generate", { method: "POST", body: { date: todayStr() } });
-    toast("已生成"); ROUTES.home();
-  };
-  bindTaskButtons(ROUTES.home);
-  // 最近学习记录(真实数据;空态引导)
-  api("/growth/timeline").then(tl => {
-    const el = $("#home-recent");
-    if (!el) return;
-    const evs = tl.slice(0, 3);
-    el.innerHTML = evs.length
-      ? evs.map(d => `<div class="task"><span class="title"><b>${esc(d.date)}</b> · ${esc(d.events[0] || "")}${d.events.length > 1 ? ' <span class="muted">等 ' + d.events.length + " 条</span>" : ""}</span></div>`).join("")
-        + '<a class="btn" href="#growth" style="margin-top:8px">全部记录 →</a>'
-      : '<div class="state" style="padding:18px"><span>还没有学习记录 —— 完成第一组刷题或写第一条反思后,这里会显示真实的最近动态。</span></div>';
-  });
 };
 
-/* ================= 任务渲染(共享) ================= */
 const KIND_NAME = { review: "复习", practice: "练习", study: "新知", weekly_review: "复盘", verify: "验证" };
 function renderTaskList(tasks, withActions) {
   if (!tasks || !tasks.length) return "";
@@ -342,1136 +230,10 @@ function bindTaskButtons(reload) {
 }
 
 /* ================= 学习中心(刷题/错题/生词/知识库) ================= */
-let studyTab = "practice";
-ROUTES.study = async (sub) => {
-  if (sub) studyTab = sub;
-  const names = { train: "🎯每日训练", practice: "间隔刷题", mistakes: "错题本", vocab: "生词", bank: "题库", knowledge: "知识库" };
-  let html = `<div class="page-head"><div>
-    <div class="section-label">STUDY CENTER</div><h1>学习中心</h1></div></div>
-  <div class="tabs">${Object.entries(names).map(([k, n]) =>
-    `<button data-t="${k}" ${studyTab === k ? 'class="on"' : ""}>${n}</button>`).join("")}</div>
-  <div id="study-body"><div class="muted">加载中…</div></div>`;
-  $("#view").innerHTML = html;
-  $$(".tabs button").forEach(b => b.onclick = () => { studyTab = b.dataset.t; ROUTES.study(studyTab); });
-  const body = $("#study-body");
-  if (studyTab === "train") await renderTrain(body);
-  else if (studyTab === "practice") await renderPractice(body);
-  else if (studyTab === "mistakes") await renderMistakes(body);
-  else if (studyTab === "vocab") await renderVocab(body);
-  else if (studyTab === "bank") await renderBank(body);
-  else await renderKnowledge(body);
-};
-
-/* ---- 每日训练(学习中心第一 Tab) ---- */
-async function renderTrain(host) {
-  const t = await api("/train/daily");
-  const items = t.items || [];
-  const totalQ = Object.values(t.quotas).reduce((a, b) => a + b, 0);
-  const shortMsg = Object.entries(t.shortage).map(([s, n]) =>
-    SUBJECTS[s] + " 缺 " + n + " 题").join("、");
-  let html = `<div class="toolbar">
-    <b style="font-size:16px">${esc(t.date)} 每日训练</b>
-    <span class="tag gray">配额 ${Object.entries(t.quotas).filter(([,v])=>v>0).map(([k,v])=>SUBJECTS[k]+" "+v).join(" / ")}</span>
-    <span class="muted">已答 ${t.done}/${items.length}${t.done ? " · 对 " + t.correct : ""}</span>
-    <button id="tr-regen" title="重新抽题(换一批)">↻ 换一批</button>
-    <a class="btn" href="#account">设置题量</a></div>
-  ${shortMsg ? '<div class="hintbox">⚠ 题库不足:' + esc(shortMsg) + ' —— 剩余科目将少于配额,系统不会用重复题凑数。可在「题库」页录入或导入更多题目。</div>' : ""}
-  ${items.length === 0 ? '<div class="card state"><div class="big">🎯</div><b>今日训练清单为空</b><span>所有科目配额为 0 或题库为空。去「设置题量」或「题库」页补充。</span></div>' : '<div id="tr-list"></div>'}`;
-  host.innerHTML = html;
-  typeset(host);
-  $("#tr-regen").onclick = async () => {
-    // 换一批:清空当日清单重新生成(已答记录保留在 answers 中,不会丢)
-    await api("/train/daily?force=1");
-    toast("已重新抽题"); renderTrain(host);
-  };
-  const list = $("#tr-list");
-  const state = { idx: items.findIndex(i => !i.answered), start: Date.now() };
-  if (state.idx < 0) state.idx = items.length; // 全部已答
-  function render() {
-    if (state.idx >= items.length) return finishView();
-    const q = items[state.idx];
-    const isChoice = (q.options || []).length >= 2;
-    let inner = `<div class="quiz-top"><b>每日训练</b>
-      <div class="progress-track"><div class="progress-fill" style="width:${Math.round(state.idx / items.length * 100)}%"></div></div>
-      <span class="muted">${state.idx + 1} / ${items.length}</span></div>
-      <div class="card quiz-card"><div><span class="tag ${SUBJECT_TAG[q.subject]}">${SUBJECTS[q.subject]}</span>
-      ${q.ai_generated ? '<span class="tag purple">AI 生成题</span>' : '<span class="tag gray">' + esc(q.source_type) + "</span>"}
-      <span class="tag gray">难度 ${q.difficulty}/5</span></div>
-      <div class="q-text">${md(q.question_md)}</div>`;
-    if (isChoice) {
-      inner += '<div class="options">' + q.options.map((o, i) =>
-        `<div class="option" data-letter="${LETTERS[i]}"><span class="letter">${LETTERS[i]}</span><span>${md(o)}</span></div>`).join("") + "</div>";
-    } else {
-      inner += '<div class="toolbar" style="margin-top:14px"><button class="primary" id="tr-reveal">对答案(先自己写)</button></div>';
-    }
-    inner += '<div id="tr-after"></div></div>';
-    list.innerHTML = inner;
-    typeset(list);
-    let picked = null, revealed = false;
-    $$(".option").forEach(el => el.onclick = () => {
-      if (revealed) return;
-      picked = el.dataset.letter;
-      $$(".option").forEach(x => x.classList.remove("selected"));
-      el.classList.add("selected");
-    });
-    const rev = $("#tr-reveal");
-    if (rev) rev.onclick = () => { revealed = true; submit(null, true); };
-    if (isChoice) {
-      list.querySelector(".quiz-card").insertAdjacentHTML("beforeend",
-        '<div class="toolbar" style="margin-top:14px"><button class="primary" id="tr-submit" disabled>提交</button></div>');
-      $$(".option").forEach(el => el.onclick = () => {
-        if (revealed) return;
-        picked = el.dataset.letter;
-        $$(".option").forEach(x => x.classList.remove("selected"));
-        el.classList.add("selected");
-        $("#tr-submit").disabled = false;
-      });
-      $("#tr-submit").onclick = () => { if (picked) { revealed = true; submit(picked, false); } };
-    }
-    async function submit(pick, selfMode) {
-      const seconds = Math.round((Date.now() - state.start) / 1000);
-      state.start = Date.now();
-      let correct;
-      if (selfMode) {
-        // 大题自评:先展示解析再自评
-        $("#tr-after").innerHTML = `<div class="explain"><h4>参考解析</h4><div>${md(q.solution_md || "(无解析)")}</div></div>
-          <div class="grade-row"><button data-c="1" class="good">做对了</button><button data-c="0" class="again">没做对</button></div>`;
-        typeset($("#tr-after"));
-        $$("#tr-after .grade-row button").forEach(b => b.onclick = () =>
-          finalize(b.dataset.c === "1", pick, seconds, selfMode));
-        return;
-      }
-      const r = await api("/train/answer", { method: "POST", body: {
-        qid: q.id, picked: pick, seconds } });
-      correct = r.correct;
-      // 高亮
-      $$(".option").forEach(el => {
-        el.classList.add("disabled");
-        if (el.dataset.letter === q.answer) el.classList.add("correct");
-        else if (el.dataset.letter === pick) el.classList.add("wrong");
-      });
-      $("#tr-submit").parentElement.style.display = "none";
-      if (correct) {
-        $("#tr-after").innerHTML = `<div class="explain"><h4>✓ 回答正确</h4><div>${md(q.solution_md || "")}</div></div>
-          <div class="toolbar" style="margin-top:12px"><button class="primary" id="tr-next">下一题 →</button></div>`;
-      } else {
-        $("#tr-after").innerHTML = `<div class="explain"><h4>✗ 正确答案:${esc(q.answer)}</h4><div>${md(q.solution_md || "")}</div></div>
-          <p style="font-size:12.5px;margin:8px 0 4px;color:var(--text-2)">错因标记(会写入错题本,影响复习安排):</p>
-          <div class="grade-row">
-            <button data-tag="概念不清" class="again">概念不清</button>
-            <button data-tag="计算失误" class="hard">计算失误</button>
-            <button data-tag="粗心" class="hard">粗心</button>
-            <button data-tag="不会做" class="again">不会做</button></div>`;
-      }
-      typeset($("#tr-after"));
-      if (correct) {
-        $("#tr-next").onclick = () => { state.idx++; render(); };
-      } else {
-        $$("#tr-after .grade-row button[data-tag]").forEach(b => b.onclick = async () => {
-          await api("/train/answer", { method: "POST", body: {
-            qid: q.id, picked: pick, seconds, error_tag: b.dataset.tag } });
-          toast("已记入错题本:" + b.dataset.tag);
-          state.idx++; render();
-        });
-      }
-    }
-    async function finalize(selfCorrect, pick, seconds) {
-      await api("/train/answer", { method: "POST", body: {
-        qid: q.id, picked: pick || "自评", seconds,
-        self_correct: selfCorrect, error_tag: selfCorrect ? "" : "不会做" } });
-      state.idx++; render();
-    }
-  }
-  async function finishView() {
-    await api("/train/finish", { method: "POST" }).catch(() => {});
-    const t2 = await api("/train/daily");
-    let html = `<div class="card quiz-card" style="text-align:center;padding:40px 26px">
-      <div style="font-size:42px">🏁</div><h2>今日训练完成</h2>
-      <p class="muted">共 ${t2.done} 题 · 正确 ${t2.correct}(${t2.done ? Math.round(100 * t2.correct / t2.done) : 0}%)· 成绩已计入统计,错题已进入错题本复习队列</p>
-      <div class="toolbar" style="justify-content:center;margin-top:12px">
-        <a class="btn primary" href="#growth">看成长记录</a>
-        <a class="btn" href="#study/mistakes">复习错题本</a>
-        <a class="btn" href="#home">回作战室</a></div></div>`;
-    list.innerHTML = html;
-    refreshDueBadge();
-  }
-  render();
-}
-
-/* ---- 刷题 ---- */
-async function renderPractice(host) {
-  const s = await api("/practice/session");
-  const queue = [...s.due_mistakes.map(m => ({ kind: "mistake", item: m })),
-                 ...s.due_vocab.map(v => ({ kind: "vocab", item: v }))];
-  const state = { queue, idx: 0, detail: [], sessionStart: Date.now(),
-    cardStart: 0, revealed: false, picked: null, submitted: false, hintUsed: false };
-
-  function shell(inner) {
-    const pct = state.queue.length ? Math.round(state.idx / state.queue.length * 100) : 0;
-    return `<div class="quiz-wrap">
-      <div class="quiz-top"><b style="font-size:16px">今日刷题</b>
-        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
-        <span class="muted">${state.idx + 1} / ${state.queue.length}</span></div>
-      ${inner}
-      <div class="quiz-foot">本轮答对 ${state.detail.filter(d => d.correct).length} / ${state.detail.length} · 完成后自动记入统计与间隔复习</div></div>`;
-  }
-  function render() {
-    if (state.idx >= state.queue.length) { finishView(); return; }
-    state.cardStart = Date.now();
-    state.revealed = state.picked = state.submitted = state.hintUsed = null;
-    const cur = state.queue[state.idx];
-    const item = cur.item;
-    const isChoice = cur.kind === "mistake" && Array.isArray(item.options) && item.options.length >= 2;
-    let inner = '<div class="card quiz-card">';
-    inner += `<div>${cur.kind === "vocab"
-      ? '<span class="tag amber">英语</span><span class="tag gray">' + (item.kind === "word" ? "单词" : "长难句") + "</span>"
-        + (item.lapses ? '<span class="tag red">已忘 ' + item.lapses + " 次</span>" : "")
-      : '<span class="tag ' + SUBJECT_TAG[item.subject] + '">' + SUBJECTS[item.subject] + "</span>" +
-        (item.qtype ? '<span class="tag gray">' + esc(item.qtype) + "</span>" : "") +
-        '<span class="tag gray">第 ' + ((item.lapses || 0) + 1) + " 轮</span>" +
-        (item.error_reason ? '<span class="tag amber">上次原因:' + esc(item.error_reason) + "</span>" : "")}</div>`;
-    if (item.image) inner += `<img class="q-img" src="/api/images/${esc(item.image)}" onclick="window.open('/api/images/${esc(item.image)}')">`;
-    inner += cur.kind === "vocab"
-      ? `<div class="q-text" style="font-size:20px;font-weight:700">${esc(item.text)}</div>`
-        + (item.context_md ? `<p class="muted">原文:${esc(item.context_md)}</p>` : "")
-      : `<div class="q-text">${md(item.question_md)}</div>`;
-    if (isChoice) {
-      inner += '<div class="options">' + item.options.map((opt, i) => {
-        let cls = "option";
-        if (state.submitted) {
-          cls += " disabled";
-          if (LETTERS[i] === item.answer) cls += " correct";
-          else if (LETTERS[i] === state.picked) cls += " wrong";
-        } else if (state.picked === LETTERS[i]) cls += " selected";
-        return `<div class="${cls}" data-letter="${LETTERS[i]}"><span class="letter">${LETTERS[i]}</span><span>${md(opt)}</span></div>`;
-      }).join("") + "</div>";
-      inner += state.submitted ? "" :
-        `<div class="toolbar" style="margin-top:14px"><button class="primary" id="q-submit" ${state.picked ? "" : "disabled"}>提交答案</button></div>`;
-    } else {
-      inner += state.revealed ? "" : '<div class="toolbar" style="margin-top:18px"><button class="primary" id="reveal">显示答案(先自己独立做)</button></div>';
-    }
-    const showExplain = cur.kind === "mistake" ? (state.submitted || (state.revealed && !isChoice)) : state.revealed;
-    if (showExplain) {
-      inner += `<div class="explain"><h4>${isChoice ? (state.picked === item.answer ? "✓ 回答正确" : "✗ 正确答案:" + esc(item.answer || "?")) : "解析"}</h4>
-        <div>${md(cur.kind === "mistake" ? (item.solution_md || item.correct_answer_md) : item.meaning_md)}</div>
-        ${cur.kind === "mistake" && item.my_answer_md ? '<div class="mine"><b style="font-size:12.5px">当时的做法</b><div>' + md(item.my_answer_md) + "</div></div>" : ""}
-        <p class="q-source" style="margin-bottom:0">错误原因:${esc(item.error_reason || "—")} · 来源:${esc(item.source || "—")}</p></div>
-      <label style="margin:10px 0 0;font-weight:400"><input type="checkbox" id="q-hint" ${state.hintUsed ? "checked" : ""}> 本题看了提示/解析才做出来(计入提示依赖)</label>
-      <div class="grade-row">${GRADES.map(([g, label]) => `<button data-g="${g}" class="${g}">${label}</button>`).join("")}</div>`;
-    }
-    inner += "</div>";
-    host.innerHTML = shell(inner);
-    typeset(host);
-    $$(".option").forEach(el => el.onclick = () => { if (state.submitted) return; state.picked = el.dataset.letter; render(); });
-    const submit = $("#q-submit");
-    if (submit) submit.onclick = () => { if (state.picked) { state.submitted = true; render(); } };
-    const reveal = $("#reveal");
-    if (reveal) reveal.onclick = () => { state.revealed = true; render(); };
-    const hint = $("#q-hint");
-    if (hint) hint.onchange = () => state.hintUsed = hint.checked;
-    $$(".grade-row button[data-g]").forEach(b => b.onclick = () => grade(b.dataset.g));
-  }
-  async function grade(g) {
-    const cur = state.queue[state.idx];
-    const dur = Math.round((Date.now() - state.cardStart) / 1000);
-    const correct = g !== "again" && (cur.kind !== "mistake" || !Array.isArray(cur.item.options)
-      || state.picked === cur.item.answer);
-    try {
-      await api(`/${cur.kind === "vocab" ? "vocab" : "mistakes"}/${cur.item.id}/review`,
-        { method: "POST", body: { result: g, duration_sec: dur, hint_used: !!state.hintUsed } });
-    } catch (e) { toast("评分失败:" + e.message); }
-    state.detail.push({ ref: cur.item.id, subject: cur.item.subject, kind: cur.kind,
-      correct, knowledge_ids: cur.item.knowledge_ids || [], grade: g });
-    state.idx++;
-    render();
-  }
-  async function finishView() {
-    const durMin = Math.max(1, Math.round((Date.now() - state.sessionStart) / 60000));
-    const bySub = {};
-    state.detail.forEach(d => {
-      if (d.kind !== "mistake") return;
-      bySub[d.subject] = bySub[d.subject] || { total: 0, correct: 0, kids: new Set(), items: [] };
-      bySub[d.subject].total++;
-      if (d.correct) bySub[d.subject].correct++;
-      (d.knowledge_ids || []).forEach(i => bySub[d.subject].kids.add(i));
-      bySub[d.subject].items.push({ ref: d.ref, correct: d.correct, knowledge_ids: d.knowledge_ids || [] });
-    });
-    let inner = '<div class="card quiz-card" style="text-align:center;padding:42px 30px">'
-      + '<div style="font-size:42px">🎉</div><h2 style="margin:10px 0 4px">本轮完成</h2>'
-      + `<p class="muted">用时约 ${durMin} 分钟 · 共 ${state.detail.length} 项 · 答对 ${state.detail.filter(d => d.correct).length} 项</p>`;
-    const clientId = "sess-" + state.sessionStart;
-    for (const [sub, v] of Object.entries(bySub)) {
-      try {
-        await api("/records", { method: "POST", body: {
-          subject: sub, session_type: "mistake_review", total: v.total, correct: v.correct,
-          duration_min: durMin, knowledge_ids: [...v.kids], detail: v.items,
-          client_id: clientId + "-" + sub } });
-        inner += `<p class="muted">已记录:${SUBJECTS[sub]} ${v.correct}/${v.total}</p>`;
-      } catch (e) { toast("记录失败:" + e.message); }
-    }
-    inner += '<div class="toolbar" style="justify-content:center;margin-top:16px">'
-      + '<a class="btn primary" style="padding:9px 22px" href="#coach">写 30 秒今日反思 →</a>'
-      + '<a class="btn" style="padding:9px 22px" href="#growth">查看成长记录</a></div></div>';
-    host.innerHTML = shell(inner);
-    refreshDueBadge();
-  }
-  if (!queue.length) {
-    host.innerHTML = `<div class="quiz-wrap"><div class="card quiz-card state">
-      <div class="big">✅</div><b>今日到期内容已清空</b>
-      <span>没有到期的错题和生词。去「错题」拍照录入,去「AI 教练」写反思,或在「计划」安排专项。</span>
-      <div class="toolbar" style="justify-content:center;margin-top:8px">
-        <a class="btn primary" style="padding:9px 22px" href="#study/mistakes">录错题</a>
-        <a class="btn" style="padding:9px 22px" href="#coach">写反思</a></div></div></div>`;
-    return;
-  }
-  render();
-}
-
-/* ---- 错题本 ---- */
-let mkFilter = { subject: "", q: "", due: "" };
-async function renderMistakes(host) {
-  const params = new URLSearchParams();
-  if (mkFilter.subject) params.set("subject", mkFilter.subject);
-  if (mkFilter.q) params.set("q", mkFilter.q);
-  if (mkFilter.due) params.set("due", mkFilter.due);
-  const items = await api("/mistakes?" + params);
-  let html = `<div class="toolbar">
-    <button class="primary" id="mk-add">📷 拍照 / 录入错题</button>
-    <select id="mk-subject"><option value="">全部科目</option>
-      ${Object.entries(SUBJECTS).slice(0, 3).map(([v, n]) => `<option value="${v}" ${mkFilter.subject === v ? "selected" : ""}>${n}</option>`).join("")}</select>
-    <select id="mk-due"><option value="">全部</option>
-      <option value="1" ${mkFilter.due === "1" ? "selected" : ""}>仅到期</option>
-      <option value="0" ${mkFilter.due === "0" ? "selected" : ""}>未到期</option></select>
-    <input id="mk-q" placeholder="搜索题面 / 原因 / 解析" value="${esc(mkFilter.q)}" style="width:200px"></div><div id="mk-list">`;
-  if (!items.length) html += '<div class="card state"><div class="big">📷</div><b>还没有错题</b><span>纸质错题直接拍照录入,系统保存原图 —— 手写推导和批注同样是复习材料。</span></div>';
-  for (const m of items) {
-    const due = !m.next_review || new Date(m.next_review) <= new Date();
-    html += `<div class="item" data-id="${m.id}">
-      <div class="head">${m.image ? `<img class="thumb" src="/api/images/${esc(m.image)}" loading="lazy">` : ""}
-      <div style="flex:1;min-width:0"><b>${esc((m.question_md || "(仅图片)").split("\n")[0].slice(0, 60))}</b>
-      ${m.seed ? '<span class="tag gray" title="系统自带示例,可在详情删除">示例</span>' : ""}
-      ${m.needs_confirmation ? '<span class="tag orange">需确认</span>' : ""}
-      <div class="sub">原因:${esc(m.error_reason || "—")} · 已忘 ${m.lapses || 0} 次 · ${due ? "<span style='color:var(--red)'>已到期</span>" : m.next_review}</div></div>
-      <span><span class="tag ${SUBJECT_TAG[m.subject]}">${SUBJECTS[m.subject]}</span>
-      ${m.qtype ? '<span class="tag gray">' + esc(m.qtype) + "</span>" : ""}</span></div></div>`;
-  }
-  html += "</div>";
-  host.innerHTML = html;
-  typeset(host);
-  $("#mk-add").onclick = () => mkForm();
-  $("#mk-subject").onchange = e => { mkFilter.subject = e.target.value; renderMistakes(host); };
-  $("#mk-due").onchange = e => { mkFilter.due = e.target.value; renderMistakes(host); };
-  $("#mk-q").onchange = e => { mkFilter.q = e.target.value.trim(); renderMistakes(host); };
-  $$("#mk-list .item").forEach(el => el.onclick = () => showMk(el.dataset.id, host));
-}
-
-async function showMk(id, host) {
-  const m = await api("/mistakes/" + id);
-  const isChoice = Array.isArray(m.options) && m.options.length >= 2;
-  openModal(`<h2>错题详情</h2>
-    <div style="margin-bottom:8px"><span class="tag ${SUBJECT_TAG[m.subject]}">${SUBJECTS[m.subject]}</span>
-    ${m.qtype ? '<span class="tag gray">' + esc(m.qtype) + "</span>" : ""}
-    ${m.needs_confirmation ? '<span class="tag orange">AI 结果需确认</span>' : ""}
-    ${m.confidence != null ? '<span class="tag gray">置信度 ' + Math.round(m.confidence * 100) + "%</span>" : ""}</div>
-    ${m.image ? `<img class="q-img" src="/api/images/${esc(m.image)}" onclick="window.open('/api/images/${esc(m.image)}')">` : ""}
-    <div class="q-text">${md(m.question_md)}</div>
-    ${isChoice ? '<div class="options">' + m.options.map((o, i) =>
-      `<div class="option disabled ${LETTERS[i] === m.answer ? "correct" : ""}"><span class="letter">${LETTERS[i]}</span><span>${md(o)}</span></div>`).join("") + "</div>" : ""}
-    <div class="explain" style="display:none" id="mk-explain">
-      <h4>解析</h4><div>${md(m.solution_md || m.correct_answer_md)}</div>
-      ${m.my_answer_md ? '<div class="mine"><b style="font-size:12.5px">当时的做法</b><div>' + md(m.my_answer_md) + "</div></div>" : ""}
-      <p class="q-source" style="margin-bottom:0">错误原因:${esc(m.error_reason || "—")} · 来源:${esc(m.source || "—")} · 已忘 ${m.lapses || 0} 次 · 下次:${esc(m.next_review || "待定")}</p>
-      ${(m.reviews || []).length ? '<p class="q-source" style="margin-bottom:0">复测历史:' + m.reviews.map(r =>
-        r.date + " " + ({ again: "✗忘了", hard: "△勉强", good: "✓会了", easy: "✓轻松" }[r.result] || r.result)
-        + (r.hint_used ? "(看提示)" : "")).join(" → ") + "</p>" : ""}
-    </div>
-    <div class="toolbar" style="margin-top:14px"><button class="primary" id="mk-reveal">显示解析</button></div>
-    <div class="grade-row" style="display:none" id="mk-grades">${GRADES.map(([g, label]) => `<button data-g="${g}" class="${g}">${label}</button>`).join("")}</div>
-    <div class="toolbar" style="margin-top:12px;display:none" id="mk-after">
-      <button id="mk-edit">编辑 / 校对</button><button id="mk-archive">归档</button><button id="mk-del" class="again">删除</button>
-      <a class="btn" style="margin-left:auto" href="#" onclick="closeModal();return false">关闭</a></div>`);
-  const reveal = () => {
-    $("#mk-explain").style.display = "block";
-    $("#mk-grades").style.display = "flex";
-    $("#mk-after").style.display = "flex";
-    $("#mk-reveal").parentElement.style.display = "none";
-    $$("#mk-grades button[data-g]").forEach(b => b.onclick = async () => {
-      await api("/mistakes/" + id + "/review", { method: "POST", body: { result: b.dataset.g } });
-      toast("已评分,下次复习时间已更新"); closeModal();
-      if (host) renderMistakes(host); else ROUTES.study("mistakes");
-    });
-  };
-  $("#mk-reveal").onclick = reveal;
-  $("#mk-edit").onclick = () => mkForm(m, host);
-  $("#mk-archive").onclick = async () => {
-    await api("/mistakes/" + id, { method: "PUT", body: { archived: true } });
-    toast("已归档"); closeModal(); if (host) renderMistakes(host); else ROUTES.study("mistakes");
-  };
-  $("#mk-del").onclick = async () => {
-    if (!confirm("彻底删除该错题?")) return;
-    await api("/mistakes/" + id, { method: "DELETE" });
-    toast("已删除"); closeModal(); if (host) renderMistakes(host); else ROUTES.study("mistakes");
-  };
-}
-
-async function mkForm(existing, host) {
-  const m = existing || { subject: "math", qtype: "", question_md: "", my_answer_md: "",
-    correct_answer_md: "", solution_md: "", error_reason: "", source: "", difficulty: 3,
-    knowledge_ids: [], options: [], answer: "", image: "", needs_confirmation: false };
-  const kps = await api("/knowledge?subject=" + m.subject);
-  const opts = m.options && m.options.length ? m.options : ["", "", "", ""];
-  openModal(`<h2>${existing ? "编辑 / 校对" : "拍照录入"}错题</h2>
-    <div class="form-grid">
-      <div class="full">
-        <label>题目图片(拍照 / 截图;保存原图,手写推导一并保留)</label>
-        <div id="up-zone" class="upload-zone"><span class="big">📷</span>
-          点击拍照或选择图片<span class="muted" style="display:block">(支持连续用同一张图建多道题)</span></div>
-        <input type="file" id="up-file" accept="image/*" capture="environment" style="display:none">
-        <div id="up-preview"></div></div>
-      <div class="full"><div id="ai-box"></div></div>
-      <div><label>科目</label><select id="m-subject">
-        ${Object.entries(SUBJECTS).slice(0, 3).map(([v, n]) => `<option value="${v}" ${m.subject === v ? "selected" : ""}>${n}</option>`).join("")}</select></div>
-      <div><label>题型</label><select id="m-qtype"><option value="">(不选)</option>
-        ${(QTYPES[m.subject] || []).map(t => `<option ${m.qtype === t ? "selected" : ""}>${t}</option>`).join("")}</select></div>
-      <div class="full"><label>题面文字(支持 LaTeX;AI 识别后请务必校对)</label><textarea id="m-q">${esc(m.question_md)}</textarea></div>
-      <div class="full"><label>选项(选择题填 2-4 项,大题可留空)</label>
-        ${opts.map((o, i) => `<div style="display:flex;gap:8px;margin-bottom:6px"><span style="width:26px;height:26px;flex-shrink:0;border-radius:8px;background:var(--bg-inset);display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:12px">${LETTERS[i]}</span>
-        <input class="m-opt" data-i="${i}" value="${esc(o)}" style="flex:1"></div>`).join("")}</div>
-      <div><label>正确答案(选择题填字母)</label><input id="m-ans" value="${esc(m.answer || "")}" style="width:100%"></div>
-      <div><label>难度(1-5)</label><input id="m-diff" type="number" min="1" max="5" value="${m.difficulty}" style="width:100%"></div>
-      <div class="full"><label>我当时的做法 / 原始解题过程</label><textarea id="m-my">${esc(m.my_answer_md)}</textarea></div>
-      <div class="full"><label>正确思路 / 解法(逐步,可核验)</label><textarea id="m-sol" style="min-height:100px">${esc(m.solution_md)}</textarea></div>
-      <div><label>错误原因</label><select id="m-reason">${["(不选)", ...ERROR_REASONS].map(t =>
-        `<option ${(m.error_reason || "(不选)") === t ? "selected" : ""}>${t}</option>`).join("")}</select></div>
-      <div><label>来源(教材 / 练习册 / 试卷)</label><input id="m-source" value="${esc(m.source)}" style="width:100%"></div>
-      <div class="full"><label>关联知识点</label><select id="m-kps" multiple size="4" style="width:100%">
-        ${kps.map(k => `<option value="${k.id}" ${(m.knowledge_ids || []).includes(k.id) ? "selected" : ""}>${esc(k.name)}</option>`).join("")}</select></div>
-    </div>
-    <p><button class="primary" id="m-save">保存</button> <button id="m-cancel">取消</button>
-    <span class="muted" id="m-imgstate"></span></p>`);
-
-  let curImage = m.image || "";
-  const refreshImgState = () => {
-    $("#m-imgstate").textContent = curImage ? "(将关联图片 " + curImage + ")" : "";
-    if (curImage) {
-      $("#up-preview").innerHTML = `<div class="img-preview-wrap"><img id="up-img" src="/api/images/${esc(curImage)}"></div>
-        <div class="img-tools"><button type="button" id="up-rot">旋转 90°</button>
-        <button type="button" id="up-ai" class="primary">🤖 AI 识别此图</button>
-        <input id="ai-hint" placeholder="给 AI 的补充说明(可选)" style="flex:1;min-width:160px"></div>`;
-      $("#up-rot").onclick = () => rotateAndUpload();
-      $("#up-ai").onclick = () => runAI();
-    } else $("#up-preview").innerHTML = "";
-  };
-  async function uploadBlob(blob, name) {
-    const fd = new FormData();
-    fd.append("file", blob, name || "photo.jpg");
-    const res = await fetch("/api/upload", { method: "POST", body: fd });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "上传失败");
-    curImage = data.file; refreshImgState();
-    if (data.warning) toast(data.warning);
-  }
-  function rotateAndUpload() {
-    const img = $("#up-img");
-    if (!img) return;
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
-    canvas.width = img.naturalHeight; canvas.height = img.naturalWidth;
-    ctx.translate(canvas.width / 2, canvas.height / 2);
-    ctx.rotate(Math.PI / 2);
-    ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
-    canvas.toBlob(b => uploadBlob(b, "rotated.jpg"), "image/jpeg", 0.92);
-  }
-  $("#up-zone").onclick = () => $("#up-file").click();
-  $("#up-file").onchange = async () => {
-    const f = $("#up-file").files[0];
-    if (!f) return;
-    try { await uploadBlob(f, f.name); } catch (e) { toast(e.message); }
-    $("#up-file").value = "";
-  };
-  refreshImgState();
-  async function runAI() {
-    if (!curImage) return toast("请先上传图片");
-    $("#ai-box").innerHTML = '<div class="infobox">🤖 正在识别(本地视觉模型,首次加载约 10-30 秒)…</div>';
-    try {
-      const r = await api("/ai/recognize", { method: "POST",
-        body: { file: curImage, hint: ($("#ai-hint") || {}).value || "" } });
-      renderAI(r);
-    } catch (e) { $("#ai-box").innerHTML = '<div class="hintbox">识别失败:' + esc(e.message) + "</div>"; }
-  }
-  function renderAI(r) {
-    if (!r.ai_available) {
-      $("#ai-box").innerHTML = '<div class="hintbox"><b>AI 未就绪:</b>' + esc(r.error || "") + "</div>";
-      return;
-    }
-    if (!r.ok) { $("#ai-box").innerHTML = '<div class="hintbox"><b>识别失败:</b>' + esc(r.error || "") + " 可重试或手填。</div>"; return; }
-    const d = r.data;
-    if (d.question_text) $("#m-q").value = d.question_text;
-    if (d.subject && SUBJECTS[d.subject]) $("#m-subject").value = d.subject;
-    if (d.qtype) { const sel = $("#m-qtype"); if ([...sel.options].some(o => o.value === d.qtype)) sel.value = d.qtype; }
-    if (d.difficulty) $("#m-diff").value = d.difficulty;
-    if (d.error_reason) { const sel = $("#m-reason"); if ([...sel.options].some(o => o.value === d.error_reason)) sel.value = d.error_reason; }
-    if (d.solution_draft && d.solution_draft !== "看不清,需补充" && !$("#m-sol").value) $("#m-sol").value = d.solution_draft;
-    if (d.user_work_seen && !$("#m-my").value) $("#m-my").value = d.user_work_seen;
-    const names = d.knowledge_names || [];
-    if (names.length) [...$("#m-kps").options].forEach(o => {
-      if (names.some(n => o.textContent.includes(n) || n.includes(o.textContent))) o.selected = true;
-    });
-    $("#ai-box").innerHTML = `<div class="${d.confidence < 0.6 ? "hintbox" : "infobox"}">
-      <b>🤖 AI 识别完成</b> <span class="tag ${d.confidence < 0.6 ? "orange" : "green"}">置信度 ${Math.round(d.confidence * 100)}%</span>
-      <span class="tag orange">需人工校对</span>
-      ${d.notes ? '<div style="margin-top:4px">⚠ ' + esc(d.notes) + "</div>" : ""}
-      ${names.length ? '<div>识别知识点:' + names.map(esc).join("、") + "(已尝试关联)</div>" : ""}
-      <div class="muted">已填入表单,请逐项核对 —— 公式和手写内容可能识别错误。</div></div>`;
-    typeset($("#ai-box"));
-  }
-  $("#m-cancel").onclick = closeModal;
-  $("#m-save").onclick = async () => {
-    const body = {
-      subject: $("#m-subject").value, qtype: $("#m-qtype").value,
-      question_md: $("#m-q").value, my_answer_md: $("#m-my").value,
-      solution_md: $("#m-sol").value, error_reason: $("#m-reason").value === "(不选)" ? "" : $("#m-reason").value,
-      source: $("#m-source").value, difficulty: +$("#m-diff").value || 3,
-      knowledge_ids: [...$("#m-kps").selectedOptions].map(o => o.value),
-      options: $$(".m-opt").map(i => i.value.trim()).filter(Boolean),
-      answer: ($("#m-ans").value || "").trim().toUpperCase(),
-      image: curImage, needs_confirmation: false,
-    };
-    if (!body.question_md.trim() && !body.image) return toast("题面和图片至少要有一样");
-    if (body.options.length >= 2 && !/^[A-F]$/.test(body.answer)) return toast("选择题答案请填字母 A-F");
-    try {
-      if (existing) await api("/mistakes/" + existing.id, { method: "PUT", body });
-      else await api("/mistakes", { method: "POST", body });
-      if (!existing && curImage) {
-        openModal(`<h2>已保存 ✓</h2><p>这张图片还可以继续建题(一张图多道题很常见)。</p>
-          <p><button class="primary" id="again-same">用这张图继续建下一题</button>
-          <button onclick="closeModal()">完成</button></p>`);
-        $("#again-same").onclick = () => mkForm({ ...m, image: curImage, question_md: "",
-          my_answer_md: "", solution_md: "", knowledge_ids: [], options: [], answer: "" }, host);
-        return;
-      }
-      closeModal(); toast("已保存,进入间隔复习循环");
-      if (host) renderMistakes(host); else ROUTES.study("mistakes");
-    } catch (e) { toast(e.message); }
-  };
-}
-
-/* ---- 生词 ---- */
-async function renderVocab(host) {
-  const items = await api("/vocab");
-  let html = `<div class="toolbar"><button class="primary" id="vb-add">+ 添加</button></div><div class="card">`;
-  if (!items.length) html += '<div class="state"><div class="big">🔤</div><b>暂无条目</b><span>阅读中遇到生词/长难句就记一条,系统按间隔复习安排。</span></div>';
-  for (const v of items) {
-    const due = !v.next_review || new Date(v.next_review) <= new Date();
-    html += `<div class="item" data-id="${v.id}"><div class="head">
-      <b>${esc(v.text)}</b><span><span class="tag gray">${v.kind === "word" ? "单词" : "长难句"}</span>
-      <span class="tag ${due ? "red" : "green"}">${due ? "已到期" : v.next_review}</span></span></div>
-      <div class="sub">${esc((v.meaning_md || "").slice(0, 80))}</div></div>`;
-  }
-  html += "</div>";
-  host.innerHTML = html;
-  typeset(host);
-  $("#vb-add").onclick = vbForm;
-  $$(".item", host).forEach(el => el.onclick = () => vbReview(el.dataset.id, host));
-}
-function vbForm() {
-  openModal(`<h2>添加生词 / 长难句</h2>
-    <div class="form-grid">
-      <div><label>类型</label><select id="v-kind"><option value="word">单词</option><option value="sentence">长难句</option></select></div>
-      <div><label>出处</label><input id="v-source" style="width:100%"></div>
-      <div class="full"><label>词 / 句</label><input id="v-text" style="width:100%"></div>
-      <div class="full"><label>原文语境</label><textarea id="v-ctx"></textarea></div>
-      <div class="full"><label>释义 / 句子分析(以词典或解析为准)</label><textarea id="v-mean"></textarea></div>
-    </div>
-    <p><button class="primary" id="v-save">保存</button> <button onclick="closeModal()">取消</button></p>`);
-  $("#v-save").onclick = async () => {
-    if (!$("#v-text").value.trim()) return toast("必填词/句");
-    await api("/vocab", { method: "POST", body: {
-      kind: $("#v-kind").value, text: $("#v-text").value,
-      context_md: $("#v-ctx").value, meaning_md: $("#v-mean").value,
-      source: $("#v-source").value } });
-    closeModal(); toast("已添加"); ROUTES.study("vocab");
-  };
-}
-function vbReview(id, host) {
-  api("/vocab").then(items => {
-    const v = items.find(x => x.id === id);
-    if (!v) return;
-    openModal(`<h2>${esc(v.text)}</h2>
-      ${v.context_md ? '<p class="muted">原文:' + esc(v.context_md) + "</p>" : ""}
-      <div>${md(v.meaning_md)}</div>
-      <p class="muted">出处:${esc(v.source || "—")} · 已忘 ${v.lapses || 0} 次 · 下次:${esc(v.next_review || "待定")}</p>
-      <div class="grade-row">${GRADES.map(([g, label]) => `<button data-g="${g}" class="${g}">${label}</button>`).join("")}</div>
-      <div class="toolbar" style="margin-top:12px"><button id="v-del" class="again">删除</button>
-      <a class="btn" style="margin-left:auto" href="#" onclick="closeModal();return false">关闭</a></div>`);
-    $$("#modal .grade-row button[data-g]").forEach(b => b.onclick = async () => {
-      await api("/vocab/" + id + "/review", { method: "POST", body: { result: b.dataset.g } });
-      toast("已评分"); closeModal(); if (host) renderVocab(host); else ROUTES.study("vocab");
-    });
-    $("#v-del").onclick = async () => { await api("/vocab/" + id, { method: "DELETE" }); closeModal(); if (host) renderVocab(host); else ROUTES.study("vocab"); };
-  });
-}
-
-/* ---- 知识库 ---- */
-let kpFilter = { subject: "", q: "", chapter: "" };
-/* ---- 题库 Tab(插入 renderKnowledge 之前) ---- */
-async function renderBank(host) {
-  const page0 = host.dataset.qpage || 1;
-  const qp = new URLSearchParams();
-  if (host.dataset.subject) qp.set("subject", host.dataset.subject);
-  qp.set("page", page0); qp.set("per", 50);
-  const [pager, stats] = await Promise.all([
-    api("/questions?" + qp), api("/data-quality")]);
-  const items = pager.items;
-  const byType = {};
-  for (const q of items) byType[q.source_type] = (byType[q.source_type] || 0) + 1;
-  let html = `<div class="toolbar">
-    <button class="primary" id="qb-add">+ 录入题目</button>
-    <button id="qb-import">批量导入(JSON)</button>
-    <button id="qb-practice" ${items.length ? "" : "disabled"}>🎯 抽题练习</button>
-    <select id="qb-subject"><option value="">全部科目</option>
-      ${Object.entries(SUBJECTS).slice(0, 4).map(([v, n]) => `<option value="${v}">${n}</option>`).join("")}</select>
-    <span class="muted">共 ${items.length} 题 · ${Object.entries(byType).map(([t, n]) => esc(t) + " " + n).join(" / ") || "空"}</span></div>
-  <div class="infobox">版权规则:真题必须声明授权依据或标「来源不明-待核验」;AI 生成题自动标注 <span class="tag purple">AI 生成</span>,永不冒充真题;题干哈希去重。</div>`;
-  if (!items.length) html += '<div class="card state"><div class="big">📋</div><b>题库为空</b><span>手动录入或导入 JSON;也可以在 AI 教练页让教练生成变式题(自动标注 AI 生成)。</span></div>';
-  html += '<div id="qb-list">';
-  for (const q of items.slice(0, 100)) {
-    html += `<div class="item" data-id="${q.id}">
-      <div class="head"><div style="min-width:0"><b>${esc(q.question_md.split("\n")[0].slice(0, 64))}</b>
-        <div class="sub">${SUBJECTS[q.subject]}${q.year ? " · " + q.year + " 年" : ""} · ${esc(q.qtype || "未分类")} · 难度 ${q.difficulty}/5
-        · ${esc(q.source_desc || q.source_type)}</div></div>
-        <span><span class="tag ${q.source_type.includes("AI") ? "purple" : q.source_type === "真题" ? "amber" : "gray"}">${esc(q.source_type)}</span>
-        ${q.ai_generated ? '<span class="tag purple">AI 生成</span>' : ""}
-        ${q.copyright_status === "来源不明-待核验" ? '<span class="tag red">待核验</span>' : ""}</span></div></div>`;
-  }
-  html += "</div>";
-  // 分页条
-  if (pager.pages > 1) {
-    html += `<div class="toolbar" style="justify-content:center;margin-top:12px">
-      <button id="qb-prev" ${pager.page > 1 ? "" : "disabled"}>← 上一页</button>
-      <span class="muted">第 ${pager.page} / ${pager.pages} 页 · 共 ${pager.total} 题</span>
-      <button id="qb-next" ${pager.page < pager.pages ? "" : "disabled"}>下一页 →</button></div>`;
-  }
-  host.innerHTML = html;
-  typeset(host);
-  const pnav = d => () => { host.dataset.qpage = (pager.page + d); renderBank(host); };
-  if ($("#qb-prev")) { $("#qb-prev").onclick = pnav(-1); $("#qb-next").onclick = pnav(1); }
-  $("#qb-subject").onchange = e => { host.dataset.subject = e.target.value; host.dataset.qpage = 1; renderBank(host); };
-  $$("#qb-list .item").forEach(el => el.onclick = () => showQb(el.dataset.id, host));
-  $("#qb-add").onclick = () => qbForm(host);
-  $("#qb-import").onclick = () => qbImport(host);
-  $("#qb-practice").onclick = () => bankPractice(host);
-}
-
-async function showQb(id, host) {
-  const q = (await api("/questions")).find(x => x.id === id);
-  if (!q) return;
-  const isChoice = (q.options || []).length >= 2;
-  openModal(`<h2>题目详情</h2>
-    <div style="margin-bottom:8px"><span class="tag ${SUBJECT_TAG[q.subject]}">${SUBJECTS[q.subject]}</span>
-    ${q.year ? '<span class="tag gray">' + q.year + " 年</span>" : ""}
-    <span class="tag ${q.source_type.includes("AI") ? "purple" : "gray"}">${esc(q.source_type)}</span>
-    ${q.ai_generated ? '<span class="tag purple">AI 生成练习题</span>' : ""}
-    <span class="tag ${q.copyright_status === "来源不明-待核验" ? "red" : "green"}">${esc(q.copyright_status)}</span></div>
-    <div class="q-text">${md(q.question_md)}</div>
-    ${isChoice ? '<div class="options">' + q.options.map((o, i) =>
-      `<div class="option disabled ${LETTERS[i] === q.answer ? "correct" : ""}"><span class="letter">${LETTERS[i]}</span><span>${md(o)}</span></div>`).join("") + "</div>"
-      : `<p><b>答案:</b>${esc(q.answer || "(见解析)")}</p>`}
-    ${q.solution_md ? '<div class="explain"><h4>解析</h4><div>' + md(q.solution_md) + "</div></div>" : '<p class="muted">暂无解析</p>'}
-    <p class="muted">来源:${esc(q.source_desc || "—")} · 录入 ${esc((q.created || "").slice(0, 10))}</p>
-    <div class="toolbar" style="margin-top:10px"><button class="again" id="qb-del">删除</button>
-    <a class="btn" style="margin-left:auto" href="#" onclick="closeModal();return false">关闭</a></div>`);
-  $("#qb-del").onclick = async () => {
-    if (!confirm("删除该题?")) return;
-    await api("/questions/" + q.id, { method: "DELETE" });
-    closeModal(); renderBank(host);
-  };
-}
-
-function qbForm(host) {
-  openModal(`<h2>录入题目</h2>
-    <p class="muted">真题请写明来源与年份;版权状态二选一:已获授权 / 来源不明-待核验。</p>
-    <div class="form-grid">
-      <div><label>科目</label><select id="q-subject">
-        ${Object.entries(SUBJECTS).slice(0, 4).map(([v, n]) => `<option value="${v}">${n}</option>`).join("")}</select></div>
-      <div><label>类型</label><select id="q-type">${["真题", "模拟题", "教材例题", "AI 生成练习题", "自录题"]
-        .map(t => `<option>${t}</option>`).join("")}</select></div>
-      <div><label>年份(真题/模拟填)</label><input id="q-year" type="number" placeholder="如 2024" style="width:100%"></div>
-      <div><label>题型(概念/计算/…)</label><input id="q-qtype" style="width:100%"></div>
-      <div class="full"><label>题干(支持 LaTeX)</label><textarea id="q-text"></textarea></div>
-      <div class="full"><label>选项(每行一项,2-4 项;大题留空)</label><textarea id="q-opts" placeholder="选项A&#10;选项B&#10;选项C&#10;选项D"></textarea></div>
-      <div><label>答案(选择题字母)</label><input id="q-ans" style="width:100%"></div>
-      <div><label>难度 1-5</label><input id="q-diff" type="number" min="1" max="5" value="3" style="width:100%"></div>
-      <div class="full"><label>解析</label><textarea id="q-sol"></textarea></div>
-      <div class="full"><label>来源描述(书名页码/网址/AI 模型名)</label><input id="q-src" style="width:100%"></div>
-      <div class="full"><label>版权状态</label><select id="q-copy" style="width:100%">
-        <option>合法使用(授权/开放许可)</option>
-        <option>来源不明-待核验</option>
-        <option>AI 原创</option>
-        <option>自述/本人记录</option></select></div>
-    </div>
-    <p><button class="primary" id="q-save">保存</button> <button onclick="closeModal()">取消</button></p>`);
-  $("#q-save").onclick = async () => {
-    const opts = $("#q-opts").value.split("\n").map(s => s.trim()).filter(Boolean);
-    const body = {
-      subject: $("#q-subject").value, source_type: $("#q-type").value,
-      year: $("#q-year").value || null, qtype: $("#q-qtype").value,
-      question_md: $("#q-text").value, options: opts,
-      answer: $("#q-ans").value, solution_md: $("#q-sol").value,
-      source_desc: $("#q-src").value, copyright_status: $("#q-copy").value,
-      difficulty: +$("#q-diff").value || 3,
-    };
-    try {
-      await api("/questions", { method: "POST", body });
-      closeModal(); toast("已录入"); renderBank(host);
-    } catch (e) { toast(e.message); }
-  };
-}
-
-function qbImport(host) {
-  openModal(`<h2>批量导入(JSON)</h2>
-    <p class="muted">格式:[{subject, source_type, year, question_md, options[], answer, solution_md, source_desc, copyright_status}]。
-    逐条校验+哈希去重,无效条目跳过并报告。上限 500 题/次。</p>
-    <textarea id="qi-json" style="min-height:180px" placeholder='[{"subject":"cs408","source_type":"自录题","question_md":"TCP 三次握手第几步最容易考?","options":["第一步","第二步","第三步"],"answer":"C","solution_md":"…","source_desc":"王道计网 第5章"}]'></textarea>
-    <p><button class="primary" id="qi-go">导入</button> <button onclick="closeModal()">取消</button></p>
-    <div id="qi-result"></div>`);
-  $("#qi-go").onclick = async () => {
-    let items;
-    try { items = JSON.parse($("#qi-json").value); }
-    catch (e) { return toast("JSON 解析失败:" + e.message); }
-    try {
-      const r = await api("/questions/import", { method: "POST", body: { items } });
-      $("#qi-result").innerHTML = `<div class="infobox">新增 <b>${r.added}</b> · 重复 ${r.duplicates.length} · 无效 ${r.invalid.length}
-        ${r.ai_generated_count ? " · 其中 AI 生成 " + r.ai_generated_count + " 题" : ""}</div>`
-        + (r.invalid.length ? '<div class="hintbox">无效明细:' + r.invalid.map(i =>
-            "#" + i.index + " " + esc(i.error)).join("<br>") + "</div>" : "");
-      toast("导入完成:新增 " + r.added);
-      setTimeout(() => renderBank(host), 800);
-    } catch (e) { toast(e.message); }
-  };
-}
-
-/* 题库抽题练习:复用刷题交互,写入练习记录 */
-async function bankPractice(host) {
-  const pool = await api("/questions/practice?n=5" + (host.dataset.subject ? "&subject=" + host.dataset.subject : ""));
-  if (!pool.length) return toast("题库为空");
-  const state = { idx: 0, detail: [], start: Date.now(), picked: null, submitted: false };
-  function render() {
-    if (state.idx >= pool.length) return finish();
-    const q = pool[state.idx];
-    const isChoice = (q.options || []).length >= 2;
-    let inner = `<div class="quiz-top"><b>题库练习</b><span class="muted">${state.idx + 1} / ${pool.length}</span></div>
-      <div class="card quiz-card"><div><span class="tag ${SUBJECT_TAG[q.subject]}">${SUBJECTS[q.subject]}</span>
-      ${q.year ? '<span class="tag gray">' + q.year + " 年</span>" : ""}
-      <span class="tag ${q.ai_generated ? "purple" : "gray"}">${esc(q.source_type)}</span>
-      ${q.ai_generated ? '<span class="tag purple">AI 生成</span>' : ""}</div>
-      <div class="q-text">${md(q.question_md)}</div>`;
-    if (isChoice) {
-      inner += '<div class="options">' + q.options.map((o, i) => {
-        let cls = "option";
-        if (state.submitted) {
-          cls += " disabled";
-          if (LETTERS[i] === q.answer) cls += " correct";
-          else if (LETTERS[i] === state.picked) cls += " wrong";
-        } else if (state.picked === LETTERS[i]) cls += " selected";
-        return `<div class="${cls}" data-letter="${LETTERS[i]}"><span class="letter">${LETTERS[i]}</span><span>${md(o)}</span></div>`;
-      }).join("") + "</div>";
-    } else {
-      inner += '<div class="toolbar" style="margin-top:14px"><button class="primary" id="bp-reveal">对答案(先自己写)</button></div>';
-    }
-    if (state.submitted || state.revealed) {
-      const correct = isChoice ? state.picked === q.answer : null;
-      inner += `<div class="explain"><h4>${correct === null ? "参考解析" : correct ? "✓ 回答正确" : "✗ 正确答案:" + esc(q.answer)}</h4>
-        <div>${md(q.solution_md || "(暂无解析)")}</div></div>
-        <div class="grade-row">${GRADES.map(([g, lb]) => `<button data-g="${g}" class="${g}">${lb}</button>`).join("")}</div>`;
-    } else if (isChoice) {
-      inner += '<div class="toolbar" style="margin-top:14px"><button class="primary" id="bp-submit" ' + (state.picked ? "" : "disabled") + '>提交</button></div>';
-    }
-    inner += "</div>";
-    host.innerHTML = inner;
-    typeset(host);
-    $$(".option").forEach(el => el.onclick = () => { if (!state.submitted) { state.picked = el.dataset.letter; render(); } });
-    const sub = $("#bp-submit");
-    if (sub) sub.onclick = () => { state.submitted = true; render(); };
-    const rev = $("#bp-reveal");
-    if (rev) rev.onclick = () => { state.revealed = true; render(); };
-    $$(".grade-row button[data-g]").forEach(b => b.onclick = async () => {
-      const q2 = pool[state.idx];
-      const correct = isChoice ? state.picked === q2.answer : b.dataset.g !== "again";
-      state.detail.push({ ref: q2.id, subject: q2.subject, correct,
-        knowledge_ids: q2.knowledge_ids || [] });
-      // 每题即时落库(幂等键防重复提交),中途离开不丢成绩
-      try {
-        await api("/records", { method: "POST", body: {
-          subject: q2.subject, session_type: "bank_practice",
-          total: 1, correct: correct ? 1 : 0, duration_min: null,
-          knowledge_ids: q2.knowledge_ids || [],
-          detail: [{ ref: q2.id, correct, knowledge_ids: q2.knowledge_ids || [] }],
-          client_id: "qb-" + state.start + "-" + state.idx } });
-      } catch (e) { toast("记录保存失败:" + e.message); }
-      state.idx++; state.picked = null; state.submitted = false; state.revealed = false;
-      render();
-    });
-  }
-  async function finish() {
-    const dur = Math.max(1, Math.round((Date.now() - state.start) / 60000));
-    const bySub = {};
-    state.detail.forEach(d => {
-      bySub[d.subject] = bySub[d.subject] || { t: 0, c: 0 };
-      bySub[d.subject].t++; if (d.correct) bySub[d.subject].c++;
-    });
-    let html = '<div class="card quiz-card" style="text-align:center;padding:40px 26px"><div style="font-size:40px">🎉</div><h2>题库练习完成</h2>'
-      + `<p class="muted">用时 ${dur} 分钟 · ${state.detail.filter(d => d.correct).length}/${state.detail.length} 正确(每题已即时记入统计)</p>`;
-    for (const [sub, v] of Object.entries(bySub)) {
-      html += `<p class="muted">${SUBJECTS[sub]} ${v.c}/${v.t}</p>`;
-    }
-    html += '<div class="toolbar" style="justify-content:center;margin-top:10px"><a class="btn primary" href="#growth">看成长记录</a></div></div>';
-    host.innerHTML = html;
-  }
-  render();
-}
-
-async function renderKnowledge(host) {
-  const params = new URLSearchParams();
-  if (kpFilter.subject) params.set("subject", kpFilter.subject);
-  if (kpFilter.q) params.set("q", kpFilter.q);
-  if (kpFilter.chapter) params.set("chapter_id", kpFilter.chapter);
-  const [items, catalog, graph] = await Promise.all([
-    api("/knowledge?" + params), api("/catalog"), api("/graph")]);
-  const chapters = [];
-  for (const t of Object.values(catalog.tracks || {}))
-    (t.chapters || []).forEach(c => chapters.push({ ...c, subject: t.subject }));
-  let html = `<div class="toolbar">
-    <button class="primary" id="kp-add">+ 新建知识点</button>
-    <select id="kp-subject"><option value="">全部科目</option>
-      ${Object.entries(SUBJECTS).slice(0, 4).map(([v, n]) => `<option value="${v}" ${kpFilter.subject === v ? "selected" : ""}>${n}</option>`).join("")}</select>
-    <select id="kp-chapter"><option value="">全部章节</option>
-      ${chapters.map(c => `<option value="${c.id}" ${kpFilter.chapter === c.id ? "selected" : ""}>${SUBJECTS[c.subject]} · ${esc(c.name)}</option>`).join("")}</select>
-    <input id="kp-q" placeholder="搜索" value="${esc(kpFilter.q)}" style="width:180px"></div>
-  <div class="row2"><div id="kp-list">`;
-  if (!items.length) html += '<div class="card state"><div class="big">📚</div><b>没有匹配的知识点</b><span>知识点是画像与计划的基础。</span></div>';
-  for (const k of items) {
-    html += `<div class="item" data-id="${k.id}">
-      <div class="head"><b>${esc(k.name)}</b>
-        <span><span class="tag ${SUBJECT_TAG[k.subject]}">${SUBJECTS[k.subject]}</span><span class="tag gray">${STATUS_TXT[k.status] || k.status}</span></span></div>
-      <div class="sub">${esc((k.tags || []).join(" · ")) || "&nbsp;"}</div></div>`;
-  }
-  html += '</div><div id="kp-detail" class="card" style="align-self:start"><span class="muted">点击左侧知识点查看详情</span></div></div>';
-  html += '<div class="card"><h2>知识点关联图</h2><div id="graph-box">' + drawGraph(graph) + "</div></div>";
-  host.innerHTML = html;
-  typeset(host);
-  $("#kp-add").onclick = () => kpForm();
-  $("#kp-subject").onchange = e => { kpFilter.subject = e.target.value; renderKnowledge(host); };
-  $("#kp-chapter").onchange = e => { kpFilter.chapter = e.target.value; renderKnowledge(host); };
-  $("#kp-q").onchange = e => { kpFilter.q = e.target.value.trim(); renderKnowledge(host); };
-  $$("#kp-list .item").forEach(el => el.onclick = () => showKp(el.dataset.id, host));
-}
-async function showKp(id, host) {
-  const k = await api("/knowledge/" + id);
-  let html = `<div class="head"><h2 style="margin:0 0 8px">${esc(k.name)}</h2>
-    <span><button id="kp-edit">编辑</button> <button id="kp-del" class="again">删除</button></span></div>
-    <div style="margin-bottom:12px"><span class="tag ${SUBJECT_TAG[k.subject]}">${SUBJECTS[k.subject]}</span>
-    <span class="tag gray">${STATUS_TXT[k.status] || k.status}</span>
-    ${(k.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join("")}
-    ${k.seed ? '<span class="tag orange">示例可删</span>' : ""}</div>
-    <p class="muted">依据:${esc(k.source || "—")}</p><div>${md(k.content_md)}</div>`;
-  for (const f of k.formulas || [])
-    html += `<h3>公式</h3><div>$${f.latex}$</div><p class="muted">适用条件:${esc(f.condition || "—")}<br>常见误用:${esc(f.misuse || "—")}</p>`;
-  for (const c of k.comparisons || []) html += `<h3>对比:${esc(c.with || "")}</h3>` + compareTable(c.table || {});
-  html += `<h3>掌握状态</h3><div class="toolbar" style="margin-bottom:0">
-    ${STATUS_ORDER.map(v => `<button data-st="${v}" ${k.status === v ? 'class="primary"' : ""}>${STATUS_TXT[v]}</button>`).join("")}</div>`;
-  const box = $("#kp-detail");
-  box.innerHTML = html;
-  typeset(box);
-  $("#kp-edit").onclick = () => kpForm(k, host);
-  $("#kp-del").onclick = async () => {
-    if (!confirm("确定删除知识点「" + k.name + "」?")) return;
-    await api("/knowledge/" + k.id, { method: "DELETE" });
-    toast("已删除"); renderKnowledge(host);
-  };
-  $$("#kp-detail button[data-st]").forEach(b => b.onclick = async () => {
-    await api("/knowledge/" + k.id, { method: "PUT", body: { status: b.dataset.st } });
-    toast("状态已更新"); showKp(k.id, host);
-  });
-}
-function compareTable(table) {
-  const rows = Object.entries(table);
-  if (!rows.length) return "";
-  const width = Math.max(...rows.map(([, v]) => (v || []).length));
-  let html = '<table class="data" style="margin-top:8px"><tr><th>维度</th>'
-    + Array.from({ length: width }, (_, i) => "<th>对象 " + (i + 1) + "</th>").join("") + "</tr>";
-  for (const [dim, vals] of rows)
-    html += "<tr><td><b>" + esc(dim) + "</b></td>" + Array.from({ length: width },
-      (_, i) => "<td>" + esc((vals || [])[i] || "—") + "</td>").join("") + "</tr>";
-  return html + "</table>";
-}
-function drawGraph(graph) {
-  const nodes = graph.nodes || [], edges = graph.edges || [];
-  if (!nodes.length) return '<span class="muted">暂无知识点</span>';
-  const depth = {};
-  nodes.forEach(n => depth[n.id] = 0);
-  for (let i = 0; i < nodes.length + 2; i++)
-    for (const e of edges)
-      if (depth[e.to] < depth[e.from] + 1) depth[e.to] = depth[e.from] + 1;
-  const colMap = {};
-  nodes.forEach(n => (colMap[depth[n.id]] = colMap[depth[n.id]] || []).push(n));
-  const NW = 136, NH = 46, GAP = 14, COLGAP = 196;
-  const maxRows = Math.max(...Object.values(colMap).map(c => c.length));
-  const W = Math.max(...Object.keys(colMap).map(Number)) * COLGAP + NW + 20;
-  const H = maxRows * (NH + GAP) + 20;
-  const pos = {};
-  let svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">`;
-  for (const [col, list] of Object.entries(colMap)) {
-    list.forEach((n, i) => {
-      const x = col * COLGAP + 10, y = i * (NH + GAP) + 10;
-      pos[n.id] = { x: x + NW / 2, y: y + NH / 2 };
-      svg += `<g class="kp-node ${n.status === "mastered" ? "mastered" : ""}">
-        <rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="10" stroke-width="1.5"></rect>
-        <text x="${x + 10}" y="${y + 20}">${esc(n.name.slice(0, 9))}</text>
-        <text x="${x + 10}" y="${y + 36}" fill="#8A93A0">${SUBJECTS[n.subject] || ""} · ${esc((STATUS_TXT[n.status] || "").slice(0, 3))}</text></g>`;
-    });
-  }
-  for (const e of edges) {
-    const a = pos[e.from], b = pos[e.to];
-    if (a && b) svg += `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="var(--border)" stroke-width="1.5"/>`;
-  }
-  return svg + "</svg>";
-}
-async function kpForm(existing, host) {
-  const catalog = await api("/catalog");
-  const chapters = [];
-  for (const t of Object.values(catalog.tracks || {}))
-    (t.chapters || []).forEach(c => chapters.push({ ...c, subject: t.subject }));
-  const k = existing || { subject: "math", chapter_id: "", name: "", content_md: "", source: "", tags: [], prerequisites: [] };
-  openModal(`<h2>${existing ? "编辑" : "新建"}知识点</h2>
-    <div class="form-grid">
-      <div><label>科目</label><select id="f-subject">
-        ${Object.entries(SUBJECTS).slice(0, 4).map(([v, n]) => `<option value="${v}" ${k.subject === v ? "selected" : ""}>${n}</option>`).join("")}</select></div>
-      <div><label>章节</label><select id="f-chapter"><option value="">(未选)</option>
-        ${chapters.map(c => `<option value="${c.id}" ${k.chapter_id === c.id ? "selected" : ""}>${SUBJECTS[c.subject]} · ${esc(c.name)}</option>`).join("")}</select></div>
-      <div><label>名称</label><input id="f-name" value="${esc(k.name)}" style="width:100%"></div>
-      <div><label>标签(逗号分隔)</label><input id="f-tags" value="${esc((k.tags || []).join(","))}" style="width:100%"></div>
-      <div class="full"><label>正文</label><textarea id="f-content" style="min-height:110px">${esc(k.content_md)}</textarea></div>
-      <div class="full"><label>出处 / 依据</label><input id="f-source" value="${esc(k.source)}" style="width:100%"></div>
-      <div class="full"><label>前置知识点 ID(逗号分隔)</label><input id="f-pre" value="${esc((k.prerequisites || []).join(","))}" style="width:100%"></div>
-    </div>
-    <p><button class="primary" id="f-save">保存</button> <button id="f-cancel">取消</button></p>`);
-  $("#f-cancel").onclick = closeModal;
-  $("#f-save").onclick = async () => {
-    const body = {
-      subject: $("#f-subject").value, chapter_id: $("#f-chapter").value,
-      name: $("#f-name").value.trim(), content_md: $("#f-content").value,
-      source: $("#f-source").value,
-      tags: $("#f-tags").value.split(",").map(s => s.trim()).filter(Boolean),
-      prerequisites: $("#f-pre").value.split(",").map(s => s.trim()).filter(Boolean),
-    };
-    if (!body.name) return toast("名称必填");
-    try {
-      if (existing) await api("/knowledge/" + existing.id, { method: "PUT", body });
-      else await api("/knowledge", { method: "POST", body });
-      closeModal(); toast("已保存"); renderKnowledge(host);
-    } catch (e) { toast(e.message); }
-  };
-}
-
-/* ================= AI 教练 ================= */
-ROUTES.coach = async () => {
-  const [status, history, reflections] = await Promise.all([
-    api("/ai/status"), api("/coach/history"), api("/reflections?limit=5"),
-  ]);
-  let html = `<div class="page-head"><div>
-    <div class="section-label">AI COACH</div><h1>AI 教练</h1></div></div>`;
-  if (!status.available) {
-    html += `<div class="hintbox"><b>AI 未就绪。</b>${esc(status.hint || "")}
-      <br><a href="#account">去设置 →</a>&nbsp;<span class="muted">配置前:反思使用规则解析(明确标注),数据照常保存。</span></div>`;
-  } else {
-    html += `<div class="infobox">🤖 ${status.mode === "local" ? "本地模型" : "云端模型"} <b>${esc(status.model || "(未选)")}</b>${status.mode === "local" ? " · Ollama 运行中 · 数据不出机器" : ""} · 回答基于你的真实错题/练习/反思(检索式上下文),区分「有数据支持」与「待验证」。</div>`;
-  }
-  html += `<div class="row2">
-    <div class="card"><h2>💬 与教练对话</h2>
-      <div class="chat-box" id="chat-box">${history.map(renderMsg).join("") || '<span class="muted">问点什么,比如:"总结我最近一周最明显的三个问题"</span>'}</div>
-      <div class="chat-input"><textarea id="chat-text" placeholder="向教练提问…(Enter 发送)"></textarea>
-      <button class="primary" id="chat-send">发送</button></div></div>
-    <div class="card"><h2>📝 快速反思(30 秒)</h2>
-      <textarea id="ref-text" style="min-height:90px" placeholder="今天学了什么、卡在哪、感觉如何…"></textarea>
-      <div class="toolbar" style="margin:10px 0 0">
-        <button id="ref-voice" title="语音输入(Chrome/Edge)">🎤 语音</button>
-        <button class="primary" id="ref-extract">提取结构化记录</button>
-        <span class="muted" id="ref-voice-state"></span></div>
-      <div id="ref-confirm"></div>
-      <h2 style="margin-top:20px">最近的反思</h2>
-      <div id="ref-list">${reflections.map(r => {
-        const ex = r.extracted || {};
-        return `<div class="item" style="cursor:default"><b>${esc(r.date)}</b>
-          <span class="tag ${ex.source === "ai" ? "purple" : "gray"}">${ex.source === "ai" ? "AI 提取" : "规则提取"}</span>
-          <div class="sub">${esc(ex.content || r.raw_text.slice(0, 60))}</div></div>`;
-      }).join("") || '<span class="muted">还没有反思记录</span>'}</div></div></div>`;
-  $("#view").innerHTML = html;
-  typeset($("#view"));
-  $("#chat-send").onclick = sendChat;
-  $("#chat-text").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } };
-  let streamAbort = null;
-  async function sendChat() {
-    const box = $("#chat-text");
-    const msg = box.value.trim();
-    if (!msg) return;
-    box.value = "";
-    $("#chat-box").insertAdjacentHTML("beforeend", renderMsg({ role: "user", content: msg, date: "刚刚" }));
-    // 真实状态:检索中 → 生成中(字数)→ 完成(耗时)/失败
-    $("#chat-box").insertAdjacentHTML("beforeend",
-      '<div class="msg assistant" id="chat-live"><span class="muted" id="chat-state">🔍 检索你的学习记录…</span><div id="chat-delta"></div></div>');
-    $("#chat-box").scrollTop = 1e9;
-    const ctrl = new AbortController();
-    streamAbort = ctrl;
-    const sendBtn = $("#chat-send");
-    const oldLabel = sendBtn.textContent;
-    sendBtn.textContent = "停止";
-    sendBtn.onclick = () => ctrl.abort();
-    let acc = "";
-    try {
-      const res = await fetch("/api/coach/chat/stream", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg }), signal: ctrl.signal });
-      if (!res.ok) throw new Error("请求失败 " + res.status);
-      const ct = res.headers.get("Content-Type") || "";
-      if (ct.startsWith("application/json")) {  // 注意:x-ndjson 含 json 字样,必须精确匹配
-        // AI 不可用:返回单个 JSON 错误
-        const j = await res.json();
-        throw new Error(j.error || "AI 不可用");
-      }
-      const reader = res.body.getReader();
-      const dec = new TextDecoder("utf-8");
-      $("#chat-state").textContent = "✍️ 生成中";
-      let buf = "";
-      let proposal = null, elapsed = null, finalReply = null;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, idx).trim();
-          buf = buf.slice(idx + 1);
-          if (!line) continue;
-          const j = JSON.parse(line);
-          if (j.delta) {
-            acc += j.delta;
-            $("#chat-delta").textContent = acc;
-            $("#chat-state").textContent = "✍️ 生成中 · " + acc.length + " 字";
-            $("#chat-box").scrollTop = 1e9;
-          }
-          if (j.done) { proposal = j.proposal; elapsed = j.elapsed; finalReply = j.reply; }
-          if (j.error) throw new Error(j.error);
-        }
-      }
-      $("#chat-live").remove();
-      $("#chat-box").insertAdjacentHTML("beforeend", renderMsg({
-        role: "assistant", content: finalReply || acc || "(空回复,可重试)",
-        date: "刚刚 · " + (elapsed || "?") + "s" }));
-      // 工具提案:必须用户点击确认才执行
-      if (proposal && proposal.tools && proposal.tools.length) {
-        const chips = proposal.tools.map((t, i) => {
-          const label = t.tool === "create_task"
-            ? "创建任务:" + (t.title || "") + " ≈" + (t.est_minutes || 20) + " 分钟"
-            : "创建里程碑:" + (t.title || "");
-          return `<button class="btn" data-pi="${i}">✓ ${esc(label)}</button>`;
-        }).join(" ");
-        const wrapId = "propose-" + Date.now();
-        $("#chat-box").insertAdjacentHTML("beforeend",
-          `<div class="msg assistant system" id="${wrapId}">💡 教练提议以下操作(点击确认才会执行):<div class="toolbar" style="margin:6px 0 0">${chips}</div></div>`);
-        $("#chat-box").scrollTop = 1e9;
-        $$("#" + wrapId + " button[data-pi]").forEach(b => b.onclick = async () => {
-          b.disabled = true;
-          try {
-            await api("/tools/execute", { method: "POST", body: {
-              tool: proposal.tools[+b.dataset.pi].tool, args: proposal.tools[+b.dataset.pi] } });
-            b.textContent = "✓ 已创建";
-            toast("已按教练提案创建");
-          } catch (e) { b.textContent = "✗ " + e.message; }
-        });
-      }
-    } catch (e) {
-      $("#chat-live") && $("#chat-live").remove();
-      const aborted = e.name === "AbortError";
-      if (acc) {
-        $("#chat-box").insertAdjacentHTML("beforeend", renderMsg({
-          role: "assistant", content: acc + (aborted ? "\n[已停止]" : ""), date: "刚刚" }));
-        if (aborted) toast("已停止生成");
-      } else {
-        $("#chat-box").insertAdjacentHTML("beforeend", renderMsg({
-          role: "assistant", content: "[系统] " + (aborted ? "已取消" : e.message), date: "刚刚", system: true }));
-      }
-    }
-    sendBtn.textContent = oldLabel;
-    sendBtn.onclick = sendChat;
-    streamAbort = null;
-    $("#chat-box").scrollTop = 1e9;
-  }
-  // 语音输入(Web Speech API,不可用时按钮禁用)
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const vb = $("#ref-voice");
-  if (!SR) { vb.disabled = true; vb.title = "当前浏览器不支持语音识别"; }
-  else {
-    let rec = null;
-    vb.onclick = () => {
-      if (rec) { rec.stop(); return; }
-      rec = new SR();
-      rec.lang = "zh-CN";
-      rec.onresult = e => {
-        $("#ref-text").value = ($("#ref-text").value + " " + e.results[0][0].transcript).trim();
-      };
-      rec.onend = () => { rec = null; $("#ref-voice-state").textContent = ""; vb.textContent = "🎤 语音"; };
-      rec.onerror = () => { $("#ref-voice-state").textContent = "语音识别不可用"; rec = null; };
-      $("#ref-voice-state").textContent = "🎤 听写中…再点一次结束";
-      rec.start();
-    };
-  }
-  $("#ref-extract").onclick = async () => {
-    const text = $("#ref-text").value.trim();
-    if (!text) return toast("先写点内容");
-    $("#ref-confirm").innerHTML = '<div class="infobox">解析中…</div>';
-    const r = await api("/reflections/extract", { method: "POST", body: { text } });
-    const ex = r.extracted || {};
-    const srcTag = ex.source === "ai" ? "AI 提取" : "规则解析(未调用 AI)";
-    $("#ref-confirm").innerHTML = `<div class="card" style="box-shadow:none;border:1px solid var(--border)">
-      <div style="margin-bottom:6px"><span class="tag ${ex.source === "ai" ? "purple" : "gray"}">${srcTag}</span>
-      ${r.ai_error ? '<span class="tag red">AI 出错,已回退规则解析</span>' : ""}</div>
-      ${ex.notes ? '<div class="muted" style="margin-bottom:8px">' + esc(ex.notes) + "</div>" : ""}
-      <div class="conf-list">
-        <div class="conf-item"><b style="width:64px">科目</b><input id="c-subjects" value="${esc((ex.subjects || []).join(","))}" style="flex:1"></div>
-        <div class="conf-item"><b style="width:64px">学了什么</b><input id="c-content" value="${esc(ex.content || "")}" style="flex:1"></div>
-        <div class="conf-item"><b style="width:64px">用时(分)</b><input id="c-minutes" type="number" value="${ex.minutes || ""}" style="width:90px"></div>
-        <div class="conf-item"><b style="width:64px">薄弱点</b><input id="c-weak" value="${esc((ex.weak_points || []).join(" ; "))}" style="flex:1"></div>
-        <div class="conf-item"><b style="width:64px">困难</b><input id="c-diff" value="${esc((ex.difficulties || []).join(" ; "))}" style="flex:1"></div>
-        <div class="conf-item"><b style="width:64px">状态</b><input id="c-mood" value="${esc(ex.mood || "")}" style="width:140px"></div>
-        <div class="conf-item"><b style="width:64px">下一步</b><input id="c-plan" value="${esc(ex.next_plan || "")}" style="flex:1"></div>
-      </div>
-      <div class="toolbar" style="margin:12px 0 0"><button class="primary" id="c-save">确认保存</button>
-      <button id="c-cancel">放弃</button></div></div>`;
-    $("#c-cancel").onclick = () => $("#ref-confirm").innerHTML = "";
-    $("#c-save").onclick = async () => {
-      const split = s => (s || "").split(/[;；,，]/).map(x => x.trim()).filter(Boolean);
-      const extracted = { ...ex,
-        subjects: split($("#c-subjects").value), content: $("#c-content").value,
-        minutes: +$("#c-minutes").value || null,
-        weak_points: split($("#c-weak").value), difficulties: split($("#c-diff").value),
-        mood: $("#c-mood").value, next_plan: $("#c-plan").value };
-      await api("/reflections", { method: "POST", body: { raw_text: text, extracted, confirmed: true } });
-      toast("反思已保存,将计入画像");
-      ROUTES.coach();
-    };
-  };
-};
-function renderMsg(m) {
-  return `<div class="msg ${m.role}${m.system ? " system" : ""}">${m.content.replace(/</g, "&lt;").replace(/\n/g, "<br>")}
-    <span class="when">${esc((m.date || "").replace("T", " ").slice(0, 16))}</span></div>`;
-}
-
-/* ================= 成长(时间线/激励/里程碑) ================= */
 let growthTab = "timeline";
 ROUTES.growth = async (sub) => {
   if (sub) growthTab = sub;
-  const names = { timeline: "时间线与热力图", motivation: "经验库与激励", milestones: "里程碑" };
+  const names = { timeline: "时间线与热力图", milestones: "里程碑" };
   let html = `<div class="page-head"><div>
     <div class="section-label">GROWTH</div><h1>成长记录</h1></div></div>
   <div class="tabs">${Object.entries(names).map(([k, n]) =>
@@ -1480,8 +242,8 @@ ROUTES.growth = async (sub) => {
   $("#view").innerHTML = html;
   $$(".tabs button").forEach(b => b.onclick = () => { growthTab = b.dataset.t; ROUTES.growth(growthTab); });
   const body = $("#growth-body");
+  if (growthTab === "motivation") { location.hash = "#exp"; return; }
   if (growthTab === "timeline") await renderTimeline(body);
-  else if (growthTab === "motivation") await renderMotivation(body);
   else await renderMilestones(body);
 };
 
@@ -1515,51 +277,6 @@ async function renderTimeline(host) {
   typeset(host);
 }
 
-async function renderMotivation(host) {
-  const items = await api("/motivations");
-  let html = `<div class="toolbar"><button class="primary" id="mo-add">+ 添加内容</button>
-    <span class="muted">经验文章、激励语句、你自己的复盘故事;每条注明作者与来源,禁止虚构他人案例。</span></div>
-  <div class="row2"><div>`;
-  if (!items.length) html += '<div class="card state"><div class="big">📖</div><b>经验库还是空的</b><span>记录你自己的复盘与感悟;引用他人内容务必注明出处与授权。</span></div>';
-  for (const m of items) {
-    html += `<div class="item" style="cursor:default"><div class="head"><b>${esc(m.title || (m.type === "story" ? "复盘故事" : "激励语句"))}</b>
-      <button class="again" data-del="${m.id}">删除</button></div>
-      <div style="font-size:14px;margin-top:6px">${md(m.text)}</div>
-      <div class="sub">作者:${esc(m.author || "—")} · 来源:${esc(m.source_url || "自述")} · 授权:${esc(m.license || "自述")}</div></div>`;
-  }
-  html += "</div><div>";
-  html += '<div class="card"><h2>内容规范</h2><div style="font-size:13px" class="muted">'
-    + "· 每条内容保存标题、作者、来源链接、类型与授权状态<br>"
-    + "· 不得编造真实人物的录取结果或经历<br>"
-    + "· 引用他人内容请注明来源;无法确认授权的只留链接</div></div></div></div>";
-  host.innerHTML = html;
-  typeset(host);
-  $$("#growth-body button[data-del]").forEach(b => b.onclick = async () => {
-    await api("/motivations/" + b.dataset.del, { method: "DELETE" });
-    renderMotivation(host);
-  });
-  $("#mo-add").onclick = () => {
-    openModal(`<h2>添加经验 / 激励内容</h2>
-    <div class="form-grid">
-      <div><label>类型</label><select id="mo-type"><option value="quote">激励语句</option><option value="story">复盘故事 / 经验</option></select></div>
-      <div><label>标题</label><input id="mo-title" style="width:100%"></div>
-      <div class="full"><label>正文</label><textarea id="mo-text"></textarea></div>
-      <div><label>作者</label><input id="mo-author" style="width:100%"></div>
-      <div><label>来源链接(自述可留空)</label><input id="mo-url" style="width:100%"></div>
-      <div class="full"><label>授权 / 许可(引用他人内容必填)</label><input id="mo-license" placeholder="如:CC BY 4.0 / 已获授权 / 公共领域" style="width:100%"></div>
-    </div>
-    <p><button class="primary" id="mo-save">保存</button> <button onclick="closeModal()">取消</button></p>`);
-    $("#mo-save").onclick = async () => {
-      if (!$("#mo-text").value.trim()) return toast("正文必填");
-      await api("/motivations", { method: "POST", body: {
-        type: $("#mo-type").value, title: $("#mo-title").value, text: $("#mo-text").value,
-        author: $("#mo-author").value, source_url: $("#mo-url").value,
-        license: $("#mo-license").value } });
-      closeModal(); toast("已保存"); renderMotivation(host);
-    };
-  };
-}
-
 async function renderMilestones(host) {
   const goals = await api("/goals");
   let html = `<div class="toolbar"><button class="primary" id="ms-add">+ 添加里程碑</button></div>`;
@@ -1591,10 +308,10 @@ async function renderMilestones(host) {
 }
 
 /* ================= 情报站 ================= */
-let intelTab = "search";
+let intelTab = "hot";
 ROUTES.intel = async (sub) => {
   if (sub) intelTab = sub;
-  const names = { hot: "热点雷达", search: "搜索", sources: "来源清单", schools: "梦校与目标", exp: "经验与方法", quality: "数据质量" };
+  const names = { hot: "考研热点", sources: "来源与数据源", schools: "院校库", quality: "数据质量" };
   let html = `<div class="page-head"><div>
     <div class="section-label">INTELLIGENCE</div><h1>考研情报站</h1></div></div>
   <div class="tabs">${Object.entries(names).map(([k, n]) =>
@@ -1603,12 +320,133 @@ ROUTES.intel = async (sub) => {
   $("#view").innerHTML = html;
   $$(".tabs button").forEach(b => b.onclick = () => { intelTab = b.dataset.t; ROUTES.intel(intelTab); });
   const body = $("#intel-body");
-  if (intelTab === "search") await renderSearch(body);
-  else if (intelTab === "sources") await renderSources(body);
-  else if (intelTab === "exp") await renderExperience(body);
+  if (intelTab === "sources") await renderSources(body);
   else if (intelTab === "quality") await renderQuality(body);
   else if (intelTab === "hot") await renderHot(body);
   else await renderSchools(body);
+};
+
+/* ================= 经验贴(V2.0 核心模块) ================= */
+const EXP_TABS = [
+  ["all", "全部"], ["985", "985上岸"], ["211", "211上岸"], ["regular", "普通本科逆袭"],
+  ["cs", "计算机考研"], ["plan11408", "11408备考"], ["math1", "数学一"], ["e408", "408"],
+  ["english1", "英语一"], ["choose", "择校与专业"], ["retest", "复试与调剂"],
+  ["fail", "失败复盘避坑"], ["habit", "长期备考自律"],
+];
+function expMatch(item, tab) {
+  const t = (item.title || "") + " " + (item.summary || "");
+  if (tab === "all") return true;
+  if (tab === "985") return /985|清华|北大|复旦|上海交通|浙江大学|南京大学|中科大|哈工大|华中科技/.test(t);
+  if (tab === "211") return /211|北邮|西电|华东理工|南京理工|华中师范|苏州大学/.test(t);
+  if (tab === "regular") return /普通本科|双非|二本|三本|逆袭/.test(t);
+  if (tab === "cs") return /计算机|408|cs|编程|软件工程/.test(t) || item.subject === "cs408";
+  if (tab === "plan11408") return /11408|数学一.{0,6}英语一|数一.{0,6}408/.test(t);
+  if (tab === "math1") return /数学一|数一|高数|考研数学/.test(t) || item.subject === "math";
+  if (tab === "e408") return item.subject === "cs408" || /408/.test(t);
+  if (tab === "english1") return /英语一|阅读|作文模板|长难句/.test(t) || item.subject === "english";
+  if (tab === "choose") return item.category === "choose" || /择校|选学校|报录比/.test(t);
+  if (tab === "retest") return /复试|调剂|面试/.test(t);
+  if (tab === "fail") return item.category === "fail" || /失败|没考上|落榜|后悔|避坑/.test(t);
+  if (tab === "habit") return /自律|长期|坚持|习惯|作息/.test(t);
+  return true;
+}
+let expTab = "all", expBucket = "30", expQ = "";
+
+ROUTES.exp = async () => {
+  let html = `<div class="page-head"><div>
+    <div class="section-label">EXPERIENCE · 经验贴</div><h1>经验贴</h1></div></div>
+  <div class="infobox">全部条目来自公开检索的真实帖子(带原文链接与可信度标记);
+    AI/规则拆解仅基于摘要,不编造作者与结果。抖音/小红书无合规公开接口,走搜索引擎站点索引,来源不可用时如实显示。</div>
+  <div class="toolbar" style="flex-wrap:wrap;gap:8px">
+    <input id="exp-q" placeholder="搜索标题/摘要" value="${esc(expQ)}" style="flex:1;min-width:180px">
+    <select id="exp-bucket">${[["7", "最近 7 天"], ["30", "最近 30 天"], ["90", "最近 90 天"], ["annual", "一年内"], ["all", "全部时间"]].map(([v, n]) =>
+      `<option value="${v}" ${expBucket === v ? "selected" : ""}>${n}</option>`).join("")}</select>
+    <button class="primary" id="exp-refresh">⟳ 更新</button>
+    <span class="muted" id="exp-status"></span></div>
+  <div class="tabs" id="exp-tabs">${EXP_TABS.map(([k, n]) =>
+    `<button data-t="${k}" ${expTab === k ? 'class="on"' : ""}>${n}</button>`).join("")}</div>
+  <div id="exp-quote"></div>
+  <div id="exp-list"><div class="muted">加载中…</div></div>`;
+  $("#view").innerHTML = html;
+  typeset($("#view"));
+  api("/motivation/daily").then(d => {
+    const el = $("#exp-quote");
+    if (el && d.quote) el.innerHTML = `<div class="card" style="border-left:3px solid var(--gold);margin-bottom:12px">
+      <b>今日一句</b> <span class="tag gray">${esc(d.quote.author || "")}</span>
+      <span class="tag ${/待核验/.test(d.quote.license || d.quote.source || "") ? "amber" : "green"}">${esc(d.quote.license || d.quote.source || "")}</span>
+      <div style="margin-top:6px;font-size:15px">${esc(d.quote.text)}</div></div>`;
+  }).catch(() => {});
+  const load = async () => {
+    const p = new URLSearchParams();
+    if (expBucket !== "all") p.set("bucket", expBucket);
+    if (expQ) p.set("q", expQ);
+    const d = await api("/radar?" + p.toString());
+    radarCats = d.categories || {}; radarLevs = d.levels || {};
+    $("#exp-status").textContent = d.status.last_success
+      ? "上次更新 " + d.status.last_success.replace("T", " ").slice(0, 16)
+      : "尚未检索过";
+    const items = d.items.filter(i => !i.ctype || !["expired"].includes(i.ctype)).filter(i => expMatch(i, expTab));
+    $("#exp-list").innerHTML = items.length ? items.map(i => {
+      const lv = radarLevs[i.source_level] || "来源未定";
+      return `<div class="card" style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;gap:10px">
+        <b><a href="${esc(i.url)}" target="_blank" rel="noopener" style="color:var(--text);text-decoration:none">${esc(i.title)}</a></b>
+        <span class="score-pill" title="可信度等级">${esc(radarLevs[i.source_level] || "来源未定")}</span></div>
+      <div class="muted" style="font-size:13px;margin:6px 0">${esc(i.summary || "(无摘要)")}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+        <span class="tag gray">${esc(i.platform)}</span>
+        ${i.author ? `<span class="tag gray">${esc(i.author)}</span>` : ""}
+        <span class="tag ${i.published_at ? "gray" : "amber"}">${i.published_at ? "发布 " + esc(i.published_at) : "日期未核验"}</span>
+        <span class="tag gray">抓取 ${esc((i.fetched_at || "").slice(0, 10))}</span>
+        ${i.category && radarCats[i.category] ? `<span class="tag blue">${esc(radarCats[i.category])}</span>` : ""}</div>
+      <div class="hot-actions">
+        <button data-a="open" data-u="${esc(i.url)}" class="btn">原文 ↗</button>
+        <button data-a="ai" data-id="${i.id}" class="btn">🧠 拆解</button>
+        <button data-a="favorite" data-id="${i.id}" class="btn">${i.favorite ? "★ 已藏" : "☆ 收藏"}</button>
+        <button data-a="hide" data-id="${i.id}" class="btn">🚫 不感兴趣</button></div>
+      <div class="exp-detail" id="ed-${i.id}"></div></div>`;
+    }).join("") : `<div class="card"><div class="muted" style="padding:18px;text-align:center">该筛选下暂无内容 —— 点「⟳ 更新」检索,或换个分类。来源不可用时系统如实显示,不用虚构内容填充。</div></div>`;
+    $$("#exp-list button[data-a]").forEach(b => b.onclick = async () => {
+      const a = b.dataset.a, id = b.dataset.id;
+      if (a === "open") return window.open(b.dataset.u, "_blank");
+      if (a === "ai") {
+        b.disabled = true; b.textContent = "拆解中…";
+        try {
+          const d = await api("/radar/analyze/" + id);
+          const gen = d.generator === "ai" ? `<span class="tag blue">AI 拆解(${esc(d.model)})</span>` : '<span class="tag gray">规则提炼(AI 未配置)</span>';
+          $("#ed-" + id).innerHTML = `<div class="infobox" style="margin-top:8px">
+            <div><b>方法:</b>${esc(d.method)}</div>
+            <div><b>背景:</b>${esc(d.background)}</div>
+            <div><b>适用:</b>${esc(d.audience)}</div>
+            <div><b>局限:</b>${esc(d.limits)}</div>
+            <div style="margin-top:4px">${gen} <a href="${esc(d.url)}" target="_blank" rel="noopener">查看原文 →</a></div></div>`;
+          b.textContent = "拆解"; b.disabled = false;
+        } catch (e) { toast(e.message, "err"); b.disabled = false; b.textContent = "拆解"; }
+        return;
+      }
+      try {
+        await api("/radar/feedback", { method: "POST", body: JSON.stringify({ id, action: a }) });
+        toast(a === "favorite" ? "已收藏" : "已记录"); load();
+      } catch (e) { toast(e.message, "err"); }
+    });
+  };
+  $("#exp-refresh").onclick = async () => {
+    const b = $("#exp-refresh");
+    b.disabled = true; b.textContent = "检索中…";
+    try { const r = await api("/radar/refresh", { method: "POST" });
+      toast(r.ok ? `新增 ${r.stats.added} 条` : "检索失败:" + (r.failure_reason || "网络不可用"), r.ok ? "ok" : "err");
+    } catch (e) { toast(e.message, "err"); }
+    b.disabled = false; b.textContent = "⟳ 更新";
+    load();
+  };
+  $("#exp-bucket").onchange = e => { expBucket = e.target.value; load(); };
+  $("#exp-q").onchange = e => { expQ = e.target.value.trim(); load(); };
+  $$("#exp-tabs button").forEach(b => b.onclick = () => {
+    expTab = b.dataset.t;
+    $$("#exp-tabs button").forEach(x => x.classList.toggle("on", x === b));
+    load();
+  });
+  await load();
 };
 
 /* ================= 热点雷达(V3.1) ================= */
@@ -1881,42 +719,6 @@ async function renderHomeRadar() {
   };
 }
 
-async function renderSearch(host) {
-  let html = `<div class="infobox">搜索 GitHub 公开仓库(招生政策请以官方公告为准;AI 摘要不能替代原文)。</div>
-  <div class="toolbar"><input id="gh-q" placeholder="搜索关键词,如:408 真题 / 考研数学" style="flex:1;min-width:200px">
-  <button class="primary" id="gh-go">搜索</button></div><div id="gh-results"></div>
-  <h2 style="margin-top:20px">搜索历史</h2><div id="gh-history" class="muted">加载中…</div>`;
-  host.innerHTML = html;
-  const loadHistory = async () => {
-    const recs = await api("/search/records");
-    $("#gh-history").innerHTML = recs.length
-      ? recs.slice(0, 12).map(r => `<div class="task"><span class="title">${esc(r.q)}</span><span class="tag gray">${r.results} 条 · ${esc((r.date || "").slice(0, 10))}</span></div>`).join("")
-      : "还没有搜索记录";
-  };
-  loadHistory();
-  const go = async () => {
-    const q = $("#gh-q").value.trim();
-    if (!q) return;
-    $("#gh-results").innerHTML = '<div class="muted">搜索中…</div>';
-    try {
-      const r = await api("/search/github?q=" + encodeURIComponent(q));
-      $("#gh-results").innerHTML = !r.items.length
-        ? '<div class="state"><span>没有结果</span></div>'
-        : r.items.map(it => `<div class="item" style="cursor:default"><div class="head">
-            <b><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.full_name)}</a></b>
-            <span><span class="tag gray">★ ${it.stars ?? 0}</span>
-            <span class="tag ${it.license && it.license !== "null" ? "green" : "orange"}">${it.license && it.license !== "null" ? it.license : "无许可证"}</span></span></div>
-            <div class="sub">${esc(it.description || "无描述")} · 最近推送 ${esc((it.pushed_at || "").slice(0, 10))}</div></div>`).join("")
-          + '<div class="muted" style="margin-top:8px">⚠ 无许可证的仓库不得复制内容入库;添加到来源清单后统一核验。</div>';
-      loadHistory();
-    } catch (e) {
-      $("#gh-results").innerHTML = '<div class="hintbox">搜索失败:' + esc(e.message) + "</div>";
-    }
-  };
-  $("#gh-go").onclick = go;
-  $("#gh-q").onkeydown = e => { if (e.key === "Enter") go(); };
-}
-
 async function renderSources(host) {
   const items = await api("/sources");
   let html = `<div class="toolbar"><button class="primary" id="src-add">+ 添加来源</button>
@@ -1958,92 +760,6 @@ async function renderSources(host) {
     await api("/sources/" + b.dataset.del, { method: "DELETE" });
     renderSources(host);
   });
-}
-
-async function renderExperience(host) {
-  const [items, cats] = [await api("/experience"),
-    ["数学", "英语", "政治", "408", "择校", "复试", "调剂", "时间管理", "备考心态", "高效学习", "失败教训", "其他"]];
-  let html = `<div class="toolbar">
-    <button class="primary" id="exp-add">+ 添加经验/方法</button>
-    <select id="exp-cat"><option value="">全部分类</option>
-      ${cats.map(c => `<option>${c}</option>`).join("")}</select>
-    <label style="margin:0"><input type="checkbox" id="exp-fav"> 只看收藏</label>
-    <span class="muted">${items.length} 条 · 链接帖标注核验状态;单条经验≠普遍结论</span></div><div id="exp-list">`;
-  if (!items.length) html += '<div class="card state"><div class="big">📖</div><b>经验库为空</b><span>手动添加公开文章链接(抖音/小红书/知乎等),或记录你自己的方法笔记——平台不会绕过平台限制去抓取。</span></div>';
-  for (const p of items) {
-    html += `<div class="item" style="cursor:default" data-id="${p.id}">
-      <div class="head"><div style="min-width:0"><b>${p.favorite ? "⭐ " : ""}${esc(p.title)}</b>
-        <div class="sub">${esc(p.platform || "自记")}${p.author ? " · " + esc(p.author) : ""}${p.published ? " · " + esc(p.published) : ""}
-        ${p.url ? ' · <a href="' + esc(p.url) + '" target="_blank" rel="noopener">原文 ↗</a>' : ""}</div></div>
-        <span>${p.source_type === "platform_original" ? '<span class="tag blue">平台原创·非真实博主经验</span>' : ""}
-        <span class="tag ${p.verify_status.includes("可访问") || p.verify_status.includes("原创") ? "green" : p.verify_status.includes("无法") ? "red" : "amber"}">${esc(p.verify_status)}</span></span></div>
-      <div style="font-size:13.5px;margin-top:6px">${esc(p.summary)}</div>
-      ${(p.categories || []).map(c => '<span class="tag gray">' + esc(c) + "</span>").join(" ")}
-      ${p.methods ? '<div class="sub" style="margin-top:4px">方法:' + esc(p.methods) + "</div>" : ""}
-      <div class="toolbar" style="margin:8px 0 0;gap:6px">
-        <button data-fav="${p.id}" class="${p.favorite ? "primary" : ""}">${p.favorite ? "已收藏" : "收藏"}</button>
-        ${p.url ? '<button data-check="' + p.id + '">核验链接</button>' : ""}
-        <button data-note="${p.id}">备注</button>
-        <button class="again" data-del="${p.id}" style="margin-left:auto">删除</button></div></div>`;
-  }
-  html += "</div>";
-  host.innerHTML = html;
-  typeset(host);
-  const refresh = () => renderExperience(host);
-  $("#exp-cat").onchange = e => { host.dataset.cat = e.target.value; refresh(); };
-  $("#exp-fav").onchange = e => { host.dataset.fav = e.target.checked ? "1" : ""; refresh(); };
-  $$("button[data-fav]").forEach(b => b.onclick = async () => {
-    const p = items.find(x => x.id === b.dataset.fav);
-    await api("/experience/" + p.id, { method: "PUT", body: { favorite: !p.favorite } });
-    refresh();
-  });
-  $$("button[data-check]").forEach(b => b.onclick = async () => {
-    b.textContent = "核验中…";
-    const p = await api("/experience/" + b.dataset.check + "/check", { method: "POST" });
-    b.textContent = p.verify_status.slice(0, 14);
-  });
-  $$("button[data-note]").forEach(b => b.onclick = () => {
-    const p = items.find(x => x.id === b.dataset.note);
-    openModal(`<h2>个人备注</h2><textarea id="pn-note" style="min-height:110px">${esc(p.notes || "")}</textarea>
-      <p><button class="primary" id="pn-save">保存</button> <button onclick="closeModal()">取消</button></p>`);
-    $("#pn-save").onclick = async () => {
-      await api("/experience/" + p.id, { method: "PUT", body: { notes: $("#pn-note").value } });
-      closeModal(); refresh();
-    };
-  });
-  $$("button[data-del]").forEach(b => b.onclick = async () => {
-    if (!confirm("删除该条?")) return;
-    await api("/experience/" + b.dataset.del, { method: "DELETE" });
-    refresh();
-  });
-  $("#exp-add").onclick = () => {
-    openModal(`<h2>添加经验/方法</h2>
-    <p class="muted">粘贴公开文章链接+你的摘要;或记录自己的方法。平台不抓取受限内容。</p>
-    <div class="form-grid">
-      <div class="full"><label>标题 *</label><input id="pe-title" style="width:100%"></div>
-      <div><label>平台(抖音/小红书/知乎/B站/公众号…)</label><input id="pe-plat" style="width:100%"></div>
-      <div><label>原文链接</label><input id="pe-url" placeholder="https://..." style="width:100%"></div>
-      <div><label>作者(公开显示名)</label><input id="pe-author" style="width:100%"></div>
-      <div><label>发布日期(可获得时)</label><input id="pe-date" placeholder="如 2026-03" style="width:100%"></div>
-      <div class="full"><label>摘要(你的概括,不是复制全文)</label><textarea id="pe-sum"></textarea></div>
-      <div class="full"><label>分类(逗号分隔)</label><input id="pe-cats" placeholder="如:数学,时间管理" style="width:100%"></div>
-      <div class="full"><label>方法要点</label><input id="pe-methods" style="width:100%"></div>
-      <div class="full"><label>适用阶段</label><input id="pe-stage" placeholder="基础/强化/冲刺/全程" style="width:100%"></div>
-    </div>
-    <p><button class="primary" id="pe-save">保存</button> <button onclick="closeModal()">取消</button></p>`);
-    $("#pe-save").onclick = async () => {
-      if (!$("#pe-title").value.trim()) return toast("标题必填");
-      try {
-        await api("/experience", { method: "POST", body: {
-          title: $("#pe-title").value, platform: $("#pe-plat").value,
-          url: $("#pe-url").value, author: $("#pe-author").value,
-          published: $("#pe-date").value || null, summary: $("#pe-sum").value,
-          categories: $("#pe-cats").value.split(",").map(s => s.trim()).filter(Boolean),
-          methods: $("#pe-methods").value, stage: $("#pe-stage").value } });
-        closeModal(); toast("已保存"); refresh();
-      } catch (e) { toast(e.message); }
-    };
-  };
 }
 
 async function renderQuality(host) {
@@ -2543,7 +1259,9 @@ ROUTES.account = async () => {
     api("/account"), api("/settings"), api("/lan"),
   ]);
   const ai = settings.ai || {};
-  const aiStatus = await api("/ai/status");
+  const aiStatus = { base_url: (ai.base_url || ""), model: (ai.model || ""),
+    has_key: !!ai.api_key,
+    available: !!(ai.api_key && ai.base_url && ai.model) };
   let html = `<div class="page-head"><div>
     <div class="section-label">PERSONAL</div><h1>个人中心</h1></div>
     <button id="logout-btn">退出登录</button></div>
@@ -2551,25 +1269,11 @@ ROUTES.account = async () => {
     <div class="card"><h2>👤 账号</h2>
       <p style="margin:0 0 4px"><b>${esc(acc.display_name)}</b> <span class="muted">(@${esc(acc.username)} · 建于 ${esc((acc.created || "").slice(0, 10))})</span></p>
       <label>显示名</label><input id="acc-name" value="${esc(acc.display_name)}" style="width:100%">
-      <label>激励风格</label><select id="acc-style" style="width:100%">
-        ${[["rational", "理性教练 —— 用证据和数字说话"], ["gentle", "温和陪伴 —— 累了就休息,马拉松心态"], ["sprint", "高强度冲刺 —— 提醒你保持节奏"]]
-          .map(([v, n]) => `<option value="${v}" ${acc.motivation_style === v ? "selected" : ""}>${n}</option>`).join("")}</select>
-      <label>每日训练题量(共 <span id="dq-total"></span> 题/天)</label>
-      <div class="toolbar" style="gap:6px">${["math", "cs408", "english", "politics"].map(sub =>
-        `<label style="margin:0">${SUBJECTS[sub]}<input type="number" min="0" max="50" data-quota="${sub}"
-          value="${((settings.daily_train || {}).quotas || {})[sub] ?? 5}" style="width:56px"></label>`).join("")}
-        <button id="dq-save">保存题量</button></div>
-      <label>各科当前水平(自评,供教练参考)</label>
-      <div class="toolbar" style="gap:6px">${["math", "cs408", "english", "politics"].map(sub =>
-        `<label style="margin:0">${SUBJECTS[sub]}<select data-level="${sub}">
-        ${["未开始", "基础薄弱", "中等", "熟练"].map((l, i) =>
-          `<option value="${i}" ${((settings.subjects[sub] || {}).level || 0) === i ? "selected" : ""}>${l}</option>`).join("")}
-        </select></label>`).join("")}</div>
       <label>修改密码</label>
       <div class="toolbar"><input id="pw-old" type="password" placeholder="原密码" style="flex:1;min-width:120px">
       <input id="pw-new" type="password" placeholder="新密码(≥8位)" style="flex:1;min-width:120px">
       <button id="pw-save">修改</button></div>
-      <div class="toolbar" style="margin-top:10px"><button class="primary" id="acc-save">保存偏好</button></div>
+      <div class="toolbar" style="margin-top:10px"><button class="primary" id="acc-save">保存显示名</button></div>
       <h2>🔐 审计日志(最近)</h2>
       <div id="audit-list" class="muted">加载中…</div></div>
     <div><div class="card"><h2>🎯 考试信息(确认后再填)</h2>
@@ -2583,16 +1287,16 @@ ROUTES.account = async () => {
       </div>
       <p><button class="primary" id="e-save">保存</button></p>
       <p class="muted" style="margin-bottom:0">也可在「情报站 → 梦校」中维护候选院校并设为当前目标。</p></div>
-    <div class="card"><h2>🤖 AI 模型(本地 Ollama 默认)</h2>
-      <div class="toolbar"><span class="tag ${aiStatus.service_ok ? "green" : "red"}">${aiStatus.service_ok ? "Ollama 运行中" : "Ollama 未运行"}</span>
-      ${aiStatus.available ? '<span class="tag green">已就绪 · ' + esc(aiStatus.model) + "</span>" : '<span class="tag amber">未选择模型</span>'}</div>
+    <div class="card"><h2>🤖 AI(云端接口,可选)</h2>
+      <div class="toolbar">${aiStatus.available ? '<span class="tag green">已配置 · ' + esc(aiStatus.model) + "</span>" : '<span class="tag amber">未配置 —— 全部功能走规则解析,基础能力不受影响</span>'}</div>
       <div class="form-grid">
-        <div><label>主模型</label><select id="ai-model" style="width:100%"></select></div>
-        <div><label>视觉模型</label><select id="ai-vmodel" style="width:100%"></select></div>
+        <div><label>Base URL(OpenAI 兼容)</label><input id="ai-base" value="${esc(aiStatus.base_url || "")}" placeholder="https://api.openai.com/v1" style="width:100%"></div>
+        <div><label>模型名</label><input id="ai-model" value="${esc(aiStatus.model || "")}" placeholder="gpt-4o-mini / glm-4-flash / deepseek-chat" style="width:100%"></div>
+        <div style="grid-column:span 2"><label>API Key(留空不修改已存 Key)</label><input id="ai-key" type="password" placeholder="${aiStatus.has_key ? "已保存,留空保持不变" : "sk-..."}" style="width:100%"></div>
       </div>
       <div class="toolbar" style="margin-top:8px"><button id="ai-save" class="primary">保存 AI 配置</button>
       <button id="ai-test">测试连接</button><span id="ai-test-result" class="muted"></span></div>
-      <p class="muted" style="margin-bottom:0">云端 API 可选:如需切换,手动编辑 data/settings.json 中 ai.mode="cloud"。</p></div>
+      <p class="muted" style="margin-bottom:0">不配置也完全可用;经验贴拆解等 AI 能力会显示"规则提炼"。本平台不再使用本地 Ollama。</p></div>
     <div class="card"><h2>📵 局域网访问</h2>
       <div id="lan-info" class="muted">读取中…</div>
       <div class="toolbar" style="margin-top:8px"><input id="ac-code" type="password" placeholder="新访问密码(可选)" style="flex:1;min-width:120px">
@@ -2608,19 +1312,12 @@ ROUTES.account = async () => {
       <span class="muted">(保留账号;需二次确认)</span></div></div></div>`;
   $("#view").innerHTML = html;
   typeset($("#view"));
-  // AI 模型下拉
-  const mSel = $("#ai-model"), vSel = $("#ai-vmodel");
-  const models = aiStatus.models || [];
-  if (models.length) {
-    mSel.innerHTML = '<option value="">(不使用)</option>' + models.map(m =>
-      `<option value="${esc(m.name)}" ${aiStatus.model === m.name ? "selected" : ""}>${esc(m.name)}${m.vision ? " [视觉]" : ""}</option>`).join("");
-    const vs = models.filter(m => m.vision);
-    vSel.innerHTML = '<option value="">(不使用)</option>' + (vs.length ? vs : models).map(m =>
-      `<option value="${esc(m.name)}" ${aiStatus.vision_model === m.name ? "selected" : ""}>${esc(m.name)}</option>`).join("");
-  } else { mSel.innerHTML = "<option>(无本地模型)</option>"; vSel.innerHTML = "<option>(无)</option>"; }
+  // 云端 AI 配置
   $("#ai-save").onclick = async () => {
-    await api("/settings", { method: "PUT", body: { ai: {
-      mode: "local", model: $("#ai-model").value, vision_model: $("#ai-vmodel").value } } });
+    const body = { ai: {
+      base_url: $("#ai-base").value.trim(), model: $("#ai-model").value.trim() } };
+    if ($("#ai-key").value.trim()) body.ai.api_key = $("#ai-key").value.trim();
+    await api("/settings", { method: "PUT", body });
     toast("已保存"); ROUTES.account();
   };
   $("#ai-test").onclick = async () => {
@@ -2628,7 +1325,7 @@ ROUTES.account = async () => {
     try {
       const r = await api("/settings/ai/test", { method: "POST" });
       $("#ai-test-result").innerHTML = r.ok
-        ? '<span style="color:var(--green)">✓ ' + esc(r.sample || "OK") + "</span>"
+        ? '<span style="color:var(--green)">✓ ' + esc(r.reply || "OK") + "</span>"
         : '<span style="color:var(--red)">✗ ' + esc(r.error) + "</span>";
     } catch (e) { $("#ai-test-result").textContent = "✗ " + e.message; }
   };
@@ -2638,29 +1335,12 @@ ROUTES.account = async () => {
       ? events.slice(0, 10).map(e => `<div class="task"><span class="title">${esc(e.time)} · ${esc(e.event)}</span></div>`).join("")
       : "暂无记录";
   });
-  const dqTotal = () => { $("#dq-total").textContent =
-    $$("input[data-quota]").reduce((a, i) => a + (+i.value || 0), 0); };
-  $$("input[data-quota]").forEach(i => i.oninput = dqTotal); dqTotal();
-  $("#dq-save").onclick = async () => {
-    const quotas = {};
-    $$("input[data-quota]").forEach(i => quotas[i.dataset.quota] = +i.value || 0);
-    try {
-      await api("/train/settings", { method: "PUT", body: { quotas } });
-      toast("每日训练题量已保存(明天生效,或点「换一批」立即重抽)");
-    } catch (e) { toast(e.message); }
-  };
   $("#acc-save").onclick = async () => {
-    await api("/account", { method: "PUT", body: {
-      display_name: $("#acc-name").value, motivation_style: $("#acc-style").value } });
-    const subjects = {};
-    $$("select[data-level]").forEach(sel => {
-      const sub = sel.dataset.level;
-      subjects[sub] = { ...(settings.subjects[sub] || {}),
-        level: +sel.value };
-    });
-    await api("/settings", { method: "PUT", body: { subjects: {
-      ...settings.subjects, ...subjects } } });
-    toast("已保存(含各科水平)");
+    try {
+      await api("/account", { method: "PUT", body: {
+        display_name: $("#acc-name").value } });
+      toast("已保存"); ROUTES.account();
+    } catch (e) { toast(e.message, "err"); }
   };
   $("#pw-save").onclick = async () => {
     try {

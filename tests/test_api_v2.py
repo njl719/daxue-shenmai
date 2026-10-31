@@ -17,50 +17,6 @@ def make_png(width=4, height=4):
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
-def test_upload_and_fetch_image(client):
-    png = make_png()
-    rv = client.post("/api/upload", data={"file": (io.BytesIO(png), "test.png")},
-                     )
-    assert rv.status_code == 200
-    j = rv.get_json()
-    assert j["file"].endswith(".png")
-    rv = client.get("/api/images/" + j["file"])
-    assert rv.status_code == 200
-    assert rv.data[:4] == b"\x89PNG"
-    # 非法文件名被拒
-    assert client.get("/api/images/..%2Fsettings.json").status_code in (400, 404)
-    # 非图片被拒
-    rv = client.post("/api/upload", data={"file": (io.BytesIO(b"xx"), "a.txt")},
-                     )
-    assert rv.status_code == 400
-
-
-def test_mistake_with_image_and_ai_fields(client):
-    png = make_png()
-    up = client.post("/api/upload", data={"file": (io.BytesIO(png), "q.png")},
-                     ).get_json()
-    rv = client.post("/api/mistakes", json={
-        "subject": "math", "question_md": "", "image": up["file"],
-        "needs_confirmation": True, "confidence": 0.4, "error_reason": "暂时无法判断"})
-    assert rv.status_code == 201
-    j = rv.get_json()
-    assert j["image"] == up["file"]
-    assert j["needs_confirmation"] is True
-    assert j["confidence"] == 0.4
-
-
-def test_ai_recognize_without_key_honest(client):
-    png = make_png()
-    up = client.post("/api/upload", data={"file": (io.BytesIO(png), "q.png")},
-                     ).get_json()
-    rv = client.post("/api/ai/recognize", json={"file": up["file"]})
-    j = rv.get_json()
-    assert j["ai_available"] is False
-    assert j["data"]["question_text"] == ""  # 不伪造
-    assert "配置" in (j["error"] or "")
-    assert client.get("/api/ai/status").get_json()["available"] is False
-
-
 def test_settings_ai_config_masked(client):
     rv = client.put("/api/settings", json={"ai": {
         "mode": "cloud", "base_url": "https://api.deepseek.com",
@@ -77,9 +33,9 @@ def test_settings_ai_config_masked(client):
     s = client.get("/api/settings").get_json()
     assert s["ai"]["model"] == "deepseek-reasoner"
     assert s["ai"]["has_key"] is True
-    # 配好 base_url+key+model 后 available(通过 ai.status 间接验证)
-    st = client.get("/api/ai/status").get_json()
-    assert st["available"] is True
+    # 配好 base_url+key+model 即视为可用(has_key 表明 Key 已存;
+    # 明文/available 不回传 —— available 由三要素推导,ai/status 已随 Ollama 移除)
+    assert s["ai"].get("base_url") and s["ai"].get("model") and s["ai"]["has_key"]
 
 
 def test_reflection_extract_rule_and_save(client):
@@ -101,20 +57,6 @@ def test_reflection_extract_rule_and_save(client):
     saved = [r for r in lst if r["id"] == rid][0]
     assert saved["extracted"]["weak_points"] == ["进程同步:信号量使用"]
     assert saved["confirmed"] is True
-
-
-def test_coach_chat_without_key_saves_honest_reply(client):
-    rv = client.post("/api/coach/chat", json={"message": "我最近数学怎么样?"})
-    j = rv.get_json()
-    assert j["reply"] is None
-    assert j["ai_available"] is False
-    hist = client.get("/api/coach/history").get_json()
-    assert len(hist) == 2
-    assert hist[0]["role"] == "user"
-    assert hist[1]["role"] == "assistant" and hist[1].get("system") is True
-    assert "配置" in hist[1]["content"]
-    # 清空
-    assert client.delete("/api/coach/history").status_code == 200
 
 
 def test_profile_endpoint_shape(client):
@@ -156,18 +98,6 @@ def test_weekly_report_week_window_cross_year():
     assert r["compare"]["this_week"]["total"] == 0  # 空数据不异常
 
 
-def test_review_with_duration_and_hint(client):
-    rv = client.post("/api/mistakes", json={
-        "subject": "cs408", "question_md": "题", "qtype": "概念"})
-    mid = rv.get_json()["id"]
-    rv = client.post("/api/mistakes/%s/review" % mid, json={
-        "result": "good", "duration_sec": 95, "hint_used": True})
-    j = rv.get_json()
-    entry = j["reviews"][-1]
-    assert entry["duration_sec"] == 95
-    assert entry["hint_used"] is True
-
-
 def test_plan_tasks_carry_coach_metadata(client):
     rv = client.post("/api/plan/generate", json={})
     tasks = rv.get_json()["tasks"]
@@ -176,17 +106,21 @@ def test_plan_tasks_carry_coach_metadata(client):
 
 
 def test_reflections_feed_weak_points(client):
-    """反思 + 复测联动:同一薄弱点反复出现 → 有证据的薄弱点。"""
-    # 1. 录入错题并关联知识点 kp-math-0002(等价无穷小)
-    client.post("/api/mistakes", json={
-        "subject": "math", "question_md": "极限题",
-        "knowledge_ids": ["kp-math-0002"], "error_reason": "等价无穷小加减误用"})
-    # 2. 两次复测都忘
-    rv = client.get("/api/mistakes?subject=math")
-    mk = [m for m in rv.get_json() if m["question_md"] == "极限题"][0]
-    client.post("/api/mistakes/%s/review" % mk["id"], json={"result": "again"})
-    # 让它再到期(隔天)后再次 again:直接改 next_review 通过 PUT 不行,用 again 两次间隔模拟
-    # 简化:直接查画像,确认反思贡献了 suspected、错题贡献了 evidence
+    """反思 + 历史错题联动:同一薄弱点反复出现 → 有证据的薄弱点。
+    (第四轮起错题 API 已移除,历史数据经 store 直插,画像逻辑不变)"""
+    # 1. 直接注入一条关联 kp-math-0002(等价无穷小)的历史错题,已两次复测忘记
+    ms = client.store.load("mistakes")
+    ms.append({"id": "mk-x1", "subject": "math", "question_md": "极限题",
+               "knowledge_ids": ["kp-math-0002"], "qtype": "计算",
+               "difficulty": 2, "options": [], "answer": "",
+               "error_reason": "等价无穷小加减误用", "solution_md": "",
+               "lapses": 2, "ease": 2.5, "interval_days": 1,
+               "reviews": [{"result": "again", "date": "2026-10-03", "duration_sec": 60},
+                           {"result": "again", "date": "2026-10-10", "duration_sec": 60}],
+               "next_review": None, "archived": False, "seed": False,
+               "created": "2026-10-01T08:00:00"})
+    client.store.save("mistakes", ms)
+    # 2. 反思同一薄弱点
     client.post("/api/reflections", json={
         "raw_text": "积分换元老想不到",
         "extracted": {"source": "rule", "subjects": ["math"],

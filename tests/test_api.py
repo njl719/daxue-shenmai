@@ -51,64 +51,6 @@ def test_knowledge_validation(client):
     assert client.post("/api/knowledge", json={"subject": "math", "name": " "}).status_code == 400
 
 
-def test_mistake_full_lifecycle(client):
-    rv = client.post("/api/mistakes", json={
-        "subject": "cs408", "question_md": "测试题面", "qtype": "概念",
-        "solution_md": "解答过程", "knowledge_ids": []})
-    assert rv.status_code == 201
-    mid = rv.get_json()["id"]
-
-    # 新错题无 next_review → 应到期
-    rv = client.get("/api/mistakes?due=1")
-    assert any(m["id"] == mid for m in rv.get_json())
-
-    # 评分 good → 明天到期
-    rv = client.post("/api/mistakes/%s/review" % mid, json={"result": "good"})
-    j = rv.get_json()
-    today = datetime.date.today()
-    assert j["next_review"] == (today + datetime.timedelta(days=1)).isoformat()
-    assert j["interval_days"] == 1
-
-    # 不再到期
-    rv = client.get("/api/mistakes?due=1")
-    assert not any(m["id"] == mid for m in rv.get_json())
-
-    # again → lapses+1,回到明天
-    rv = client.post("/api/mistakes/%s/review" % mid, json={"result": "again"})
-    assert rv.get_json()["lapses"] == 1
-
-    rv = client.delete("/api/mistakes/" + mid)
-    assert rv.status_code == 200
-
-
-def test_mistake_qtype_validation(client):
-    rv = client.post("/api/mistakes", json={
-        "subject": "math", "question_md": "题", "qtype": "不存在的题型"})
-    assert rv.status_code == 400
-
-
-def test_mistake_choice_question(client):
-    # 带选项的选择题:正常创建
-    rv = client.post("/api/mistakes", json={
-        "subject": "cs408", "question_md": "下列排序中稳定的是?",
-        "options": ["快排", "归并", "堆排", "希尔"], "answer": "B",
-        "solution_md": "归并排序稳定;其余均不稳定。"})
-    assert rv.status_code == 201
-    j = rv.get_json()
-    assert j["options"] == ["快排", "归并", "堆排", "希尔"]
-    assert j["answer"] == "B"
-    # answer 非法字母被拒
-    rv = client.post("/api/mistakes", json={
-        "subject": "cs408", "question_md": "题",
-        "options": ["甲", "乙"], "answer": "E"})
-    assert rv.status_code == 400
-    # 更新选项
-    mid = j["id"]
-    rv = client.put("/api/mistakes/" + mid, json={"answer": "B"})
-    assert rv.get_json()["answer"] == "B"
-    client.delete("/api/mistakes/" + mid)
-
-
 def test_records_and_stats(client):
     client.post("/api/records", json={
         "subject": "math", "session_type": "practice", "total": 10,
@@ -145,26 +87,6 @@ def test_plan_generate_and_task_actions(client):
     assert rv.status_code == 200 and "week_start" in rv.get_json()
 
 
-def test_practice_session(client):
-    rv = client.get("/api/practice/session")
-    j = rv.get_json()
-    assert "due_mistakes" in j and "due_vocab" in j and "weak" in j
-    # 种子错题从未复习过,应全部到期
-    assert len(j["due_mistakes"]) >= 2
-
-
-def test_vocab_flow(client):
-    rv = client.post("/api/vocab", json={"kind": "word", "text": "pivot",
-                                         "meaning_md": "n. 支点;vt. 使旋转"})
-    vid = rv.get_json()["id"]
-    rv = client.post("/api/vocab/%s/review" % vid, json={"result": "easy"})
-    assert rv.get_json()["interval_days"] == 3
-    rv = client.get("/api/vocab?q=piv")
-    assert len(rv.get_json()) == 1
-    rv = client.delete("/api/vocab/" + vid)
-    assert rv.status_code == 200
-
-
 def test_export_all(client):
     rv = client.get("/api/export/all")
     assert rv.status_code == 200
@@ -188,11 +110,3 @@ def test_graph(client):
     # 等价无穷小替换依赖洛必达 → 至少一条边
     assert len(g["edges"]) >= 1
 
-
-def test_seed_not_overwritten(client):
-    # 再次 seed 不应覆盖或重复
-    from app.seed import seed_if_empty
-    created = seed_if_empty(client.store)
-    assert created == []
-    rv = client.get("/api/mistakes")
-    assert len(rv.get_json()) == 2

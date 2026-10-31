@@ -37,37 +37,33 @@ def test_records_accepts_valid_and_casts(client):
 # ---------------- F2 知识点删除级联 ----------------
 
 def test_knowledge_delete_cleans_references(client):
+    """第四轮:错题 API 移除,历史错题经 store 直插验证级联清理。"""
     kid = client.post("/api/knowledge", json={
         "subject": "math", "name": "级联测试点"}).get_json()["id"]
-    mid = client.post("/api/mistakes", json={
-        "subject": "math", "question_md": "题面", "knowledge_ids": [kid]}).get_json()["id"]
+    ms = client.store.load("mistakes")
+    ms.append({"id": "mk-c1", "subject": "math", "question_md": "题面",
+               "knowledge_ids": [kid], "qtype": "计算", "difficulty": 3,
+               "options": [], "answer": "", "error_reason": "", "solution_md": "",
+               "lapses": 0, "ease": 2.5, "interval_days": 0, "reviews": [],
+               "next_review": None, "archived": False, "seed": False,
+               "created": "2026-10-31T08:00:00"})
+    client.store.save("mistakes", ms)
     rid = client.post("/api/records", json={
         "subject": "math", "total": 2, "correct": 1, "knowledge_ids": [kid]}).get_json()["id"]
     rv = client.delete("/api/knowledge/" + kid)
     assert rv.status_code == 200
     d = rv.get_json()
     assert d["deleted"] == kid and d["mistakes"] == 1 and d["records"] == 1
-    assert client.store.load("mistakes")[0].get("knowledge_ids") in ([], None) \
-        or all(k != kid for k in (client.store.load("mistakes")[0].get("knowledge_ids") or []))
-    assert all(k != kid for k in (client.store.load("records")[0].get("knowledge_ids") or []))
+    assert all(kid not in (m.get("knowledge_ids") or [])
+               for m in client.store.load("mistakes"))
+    assert all(kid not in (r.get("knowledge_ids") or [])
+               for r in client.store.load("records"))
     # 画像端点不因孤儿/清理异常
     assert client.get("/api/profile").status_code == 200
     assert client.delete("/api/knowledge/" + kid).status_code == 404
 
 
 # ---------------- F3 difficulty 边界 ----------------
-
-def test_mistake_difficulty_validation(client):
-    for bad in ("abc", 0, 9):
-        rv = client.post("/api/mistakes", json={
-            "subject": "math", "question_md": "题", "difficulty": bad})
-        assert rv.status_code == 400 and "1-5" in rv.get_json()["error"], bad
-    rv = client.post("/api/mistakes", json={
-        "subject": "math", "question_md": "题", "difficulty": "4"})
-    assert rv.status_code == 201 and rv.get_json()["difficulty"] == 4
-
-
-# ---------------- F4 恢复工具 ----------------
 
 def test_restore_dry_run_and_mirror(tmp_path):
     data_dir = tmp_path / "data"

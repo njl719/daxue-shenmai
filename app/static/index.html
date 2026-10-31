@@ -14,10 +14,10 @@
 <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
 <link rel="stylesheet" href="/static/style.css">
 <script>
-/* 主题:在 CSS 加载前应用,避免闪烁 */
+/* 主题:在 CSS 加载前应用,避免闪烁;V2.0 默认浅色渐变方向 */
 (function () {
   var t = localStorage.getItem("dx-theme");
-  if (!t) t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  if (!t) t = "light";
   document.documentElement.setAttribute("data-theme", t);
 })();
 </script>
@@ -43,39 +43,34 @@
       <span class="logo-tag">DXSM</span>
     </a>
     <div class="nav-links nav-set" id="nav">
-      <a href="#home" data-view="home">今日</a>
-      <a href="#intel/schools" data-view="intel">院校情报</a>
-      <a href="#decision" data-view="decision">智能择校</a>
-      <a href="#intel/hot" data-view="intel">考研热点</a>
-      <a href="#growth/motivation" data-view="growth">经验励志</a>
-      <a href="#coach" data-view="coach">AI 顾问</a>
-      <a href="#profile" data-view="profile">个人画像</a>
-      <a href="#account" data-view="account">设置中心</a>
-      <a href="#study" data-view="study" title="练习工具(已由独立刷题软件承接)">练习工具</a>
+      <a href="#home" data-view="home">首页</a>
+      <a href="#intel/schools" data-view="intel">院校库</a>
+      <a href="#decision" data-view="decision">院校预测</a>
+      <a href="#exp" data-view="exp">经验贴</a>
+      <a href="#growth/timeline" data-view="growth">成长记录</a>
+      <a href="#account" data-view="account">设置</a>
     </div>
     <div class="nav-right">
       <button class="theme-toggle" id="theme-toggle" title="切换明暗主题">🌙</button>
-      <a href="#practice" class="due-badge" id="nav-due" title="今日到期">…</a>
-    </div>
+      </div>
   </div>
 </nav>
 
 <!-- 移动端底部导航(桌面隐藏) -->
 <nav id="bottomnav" class="nav-set">
-  <a href="#home" data-view="home"><i>🏠</i>今日</a>
-  <a href="#decision" data-view="decision"><i>🎯</i>择校</a>
-  <a href="#intel" data-view="intel"><i>🔭</i>情报</a>
-  <a href="#coach" data-view="coach"><i>🤖</i>顾问</a>
-  <a href="#profile" data-view="profile"><i>🧭</i>画像</a>
-  <a href="#study" data-view="study"><i>📚</i>练习</a>
-  <a href="#account" data-view="account"><i>👤</i>我的</a>
+  <a href="#home" data-view="home"><i>🏠</i>首页</a>
+  <a href="#intel/schools" data-view="intel"><i>🏫</i>院校库</a>
+  <a href="#decision" data-view="decision"><i>🎯</i>预测</a>
+  <a href="#exp" data-view="exp"><i>📰</i>经验贴</a>
+  <a href="#growth/timeline" data-view="growth"><i>📈</i>成长</a>
+  <a href="#account" data-view="account"><i>⚙️</i>设置</a>
 </nav>
 
 <main id="view" class="container"></main>
 
 <footer class="site-footer">
   <div class="container">
-    <span>大雪深埋 · 本地运行 · 数据自持 · AI 由本地 Ollama 驱动</span>
+    <span>大雪深埋 · 2028 AI 考研决策与情报中心 · 本地运行 · 数据自持</span>
     <span class="muted">data/ 即全部数据(含图片) · backups/ 自动备份 · exports/ 可导出迁移</span>
   </div>
 </footer>

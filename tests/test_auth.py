@@ -31,7 +31,7 @@ def test_gate_requires_session(client):
 
 def test_login_logout(client):
     client.post("/api/logout")
-    rv = client.get("/api/mistakes")
+    rv = client.get("/api/records")
     assert rv.status_code == 401
     # 错误密码
     rv = client.post("/api/login", json={"username": "tester", "password": "wrong!"})
@@ -39,7 +39,7 @@ def test_login_logout(client):
     # 正确登录
     rv = client.post("/api/login", json={"username": "tester", "password": "secret123"})
     assert rv.status_code == 200
-    assert client.get("/api/mistakes").status_code == 200
+    assert client.get("/api/records").status_code == 200
 
 
 def test_login_failure_audited(client):
@@ -52,7 +52,7 @@ def test_password_change_revokes_sessions(client):
     client.post("/api/account/password", json={
         "old_password": "secret123", "new_password": "newpass66"})
     # 旧会话已被吊销
-    assert client.get("/api/mistakes").status_code == 401
+    assert client.get("/api/records").status_code == 401
     rv = client.post("/api/login", json={"username": "tester", "password": "newpass66"})
     assert rv.status_code == 200
 

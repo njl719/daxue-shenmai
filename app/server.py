@@ -299,215 +299,7 @@ def create_app(data_dir=None, backup_dir=None):
         return jsonify({"deleted": kid} | cleaned)
 
     # ---------- mistakes ----------
-    def _due_filter(ms, due):
-        if not due:
-            return ms
-        today = _today()
         return [m for m in ms if srs.is_due(m, today)]
-
-    @app.get("/api/mistakes")
-    def list_mistakes():
-        items = store.load("mistakes")
-        subject = request.args.get("subject")
-        q = (request.args.get("q") or "").lower()
-        qtype = request.args.get("qtype")
-        if request.args.get("archived") != "1":
-            items = [m for m in items if not m.get("archived")]
-        if subject:
-            items = [m for m in items if m.get("subject") == subject]
-        if qtype:
-            items = [m for m in items if m.get("qtype") == qtype]
-        error_reason = request.args.get("error_reason")
-        if error_reason:
-            items = [m for m in items if m.get("error_reason") == error_reason]
-        kid = request.args.get("knowledge_id")
-        if kid:
-            items = [m for m in items if kid in (m.get("knowledge_ids") or [])]
-        if q:
-            items = [m for m in items if q in (m.get("question_md", "") +
-                                               m.get("error_reason", "") +
-                                               m.get("solution_md", "")).lower()]
-        due = request.args.get("due")
-        if due == "1":
-            items = _due_filter(items, True)
-        elif due == "0":
-            items = [m for m in items if not srs.is_due(m, _today())]
-        return jsonify(items)
-
-    @app.post("/api/mistakes")
-    def add_mistake():
-        body = request.get_json(force=True, silent=True) or {}
-        if body.get("subject") not in SUBJECTS:
-            return _bad("subject 必须是 %s" % (SUBJECTS,))
-        if not (body.get("question_md") or "").strip() and not body.get("image"):
-            return _bad("题面和图片至少要有一样(图片不清晰时可先只存图,稍后补文字)")
-        if body.get("qtype") and QTYPES.get(body["subject"]) \
-                and body["qtype"] not in QTYPES[body["subject"]]:
-            return _bad("该科目题型应为:%s" % "、".join(QTYPES[body["subject"]]))
-        raw_diff = body.get("difficulty")
-        if raw_diff in (None, ""):
-            difficulty = 3
-        else:
-            try:
-                difficulty = int(raw_diff)
-            except (TypeError, ValueError):
-                return _bad("difficulty 须为 1-5 的整数")
-            if not 1 <= difficulty <= 5:
-                return _bad("difficulty 须为 1-5 的整数")
-        items = store.load("mistakes")
-        item = {
-            "id": _next_id(items, "mk"),
-            "subject": body["subject"],
-            "knowledge_ids": body.get("knowledge_ids") or [],
-            "qtype": body.get("qtype") or "",
-            "question_md": body["question_md"],
-            "options": [str(o).strip() for o in (body.get("options") or []) if str(o).strip()],
-            "answer": "",
-            "image": body.get("image") or "",
-            "ai_recognition": body.get("ai_recognition") or None,
-            "confidence": body.get("confidence"),
-            "needs_confirmation": bool(body.get("needs_confirmation")),
-            "my_answer_md": body.get("my_answer_md") or "",
-            "correct_answer_md": body.get("correct_answer_md") or "",
-            "error_reason": body.get("error_reason") or "",
-            "solution_md": body.get("solution_md") or "",
-            "source": body.get("source") or "",
-            "difficulty": difficulty,
-            "reviews": [], "interval_days": 0, "ease": 2.5, "lapses": 0,
-            "next_review": None, "archived": False, "seed": False,
-            "created": datetime.datetime.now().isoformat(timespec="seconds"),
-        }
-        opts = item["options"]
-        ans = str(body.get("answer") or "").strip().upper()
-        if opts and len(opts) >= 2:
-            if ans not in [chr(65 + i) for i in range(len(opts))]:
-                return _bad("answer 必须是选项字母(A-%s)" % chr(64 + len(opts)))
-            item["answer"] = ans
-        else:
-            item["options"], item["answer"] = [], ""
-        items.append(item)
-        store.save("mistakes", items)
-        return jsonify(item), 201
-
-    @app.get("/api/mistakes/<mid>")
-    def get_mistake(mid):
-        for m in store.load("mistakes"):
-            if m["id"] == mid:
-                return jsonify(m)
-        return _bad("错题不存在", 404)
-
-    @app.put("/api/mistakes/<mid>")
-    def update_mistake(mid):
-        body = request.get_json(force=True, silent=True) or {}
-        items = store.load("mistakes")
-        for m in items:
-            if m["id"] == mid:
-                for f in ("knowledge_ids", "qtype", "question_md", "options",
-                          "answer", "my_answer_md", "image",
-                          "correct_answer_md", "error_reason", "solution_md",
-                          "source", "difficulty", "archived",
-                          "needs_confirmation"):
-                    if f in body:
-                        m[f] = body[f]
-                if "confidence" in body:
-                    m["confidence"] = body["confidence"]
-                store.save("mistakes", items)
-                return jsonify(m)
-        return _bad("错题不存在", 404)
-
-    @app.delete("/api/mistakes/<mid>")
-    def delete_mistake(mid):
-        items = store.load("mistakes")
-        remain = [m for m in items if m["id"] != mid]
-        if len(remain) == len(items):
-            return _bad("错题不存在", 404)
-        store.save("mistakes", remain)
-        return jsonify({"deleted": mid})
-
-    @app.post("/api/mistakes/<mid>/review")
-    def review_mistake(mid):
-        body = request.get_json(force=True, silent=True) or {}
-        grade = body.get("result")
-        if grade not in srs.GRADES:
-            return _bad("result 必须是 %s" % (srs.GRADES,))
-        items = store.load("mistakes")
-        for m in items:
-            if m["id"] == mid:
-                updated = srs.apply_review(m, grade, _today())
-                entry = {"date": _today().isoformat(), "result": grade,
-                         "interval": updated["interval_days"]}
-                # 复测质量数据:耗时与提示依赖
-                if body.get("duration_sec") is not None:
-                    try:
-                        entry["duration_sec"] = int(body["duration_sec"])
-                    except (TypeError, ValueError):
-                        pass
-                entry["hint_used"] = bool(body.get("hint_used"))
-                updated["reviews"][-1] = entry
-                m.update({k: updated[k] for k in
-                          ("reviews", "interval_days", "ease", "lapses", "next_review")})
-                store.save("mistakes", items)
-                return jsonify(m)
-        return _bad("错题不存在", 404)
-
-    # ---------- vocab ----------
-    @app.get("/api/vocab")
-    def list_vocab():
-        items = [v for v in store.load("vocab") if not v.get("archived")]
-        q = (request.args.get("q") or "").lower()
-        kind = request.args.get("kind")
-        if kind:
-            items = [v for v in items if v.get("kind") == kind]
-        if q:
-            items = [v for v in items if q in (v.get("text", "") +
-                                               v.get("meaning_md", "")).lower()]
-        return jsonify(items)
-
-    @app.post("/api/vocab")
-    def add_vocab():
-        body = request.get_json(force=True, silent=True) or {}
-        if not (body.get("text") or "").strip():
-            return _bad("text 必填")
-        items = store.load("vocab")
-        item = {
-            "id": _next_id(items, "vb"),
-            "kind": body.get("kind") if body.get("kind") in ("word", "sentence") else "word",
-            "text": body["text"].strip(),
-            "context_md": body.get("context_md") or "",
-            "meaning_md": body.get("meaning_md") or "",
-            "source": body.get("source") or "",
-            "reviews": [], "interval_days": 0, "ease": 2.5, "lapses": 0,
-            "next_review": None, "archived": False, "seed": False,
-            "created": datetime.datetime.now().isoformat(timespec="seconds"),
-        }
-        items.append(item)
-        store.save("vocab", items)
-        return jsonify(item), 201
-
-    @app.delete("/api/vocab/<vid>")
-    def delete_vocab(vid):
-        items = store.load("vocab")
-        remain = [v for v in items if v["id"] != vid]
-        if len(remain) == len(items):
-            return _bad("条目不存在", 404)
-        store.save("vocab", remain)
-        return jsonify({"deleted": vid})
-
-    @app.post("/api/vocab/<vid>/review")
-    def review_vocab(vid):
-        body = request.get_json(force=True, silent=True) or {}
-        grade = body.get("result")
-        if grade not in srs.GRADES:
-            return _bad("result 必须是 %s" % (srs.GRADES,))
-        items = store.load("vocab")
-        for v in items:
-            if v["id"] == vid:
-                updated = srs.apply_review(v, grade, _today())
-                v.update({k: updated[k] for k in
-                          ("reviews", "interval_days", "ease", "lapses", "next_review")})
-                store.save("vocab", items)
-                return jsonify(v)
-        return _bad("条目不存在", 404)
 
     # ---------- records ----------
     @app.get("/api/records")
@@ -635,28 +427,6 @@ def create_app(data_dir=None, backup_dir=None):
         return jsonify(summary)
 
     # ---------- practice session ----------
-    @app.get("/api/practice/session")
-    def practice_session():
-        today = _today()
-        mistakes = [m for m in store.load("mistakes")
-                    if not m.get("archived") and srs.is_due(m, today)]
-        mistakes.sort(key=lambda m: m.get("next_review") or "")
-        vocab = [v for v in store.load("vocab")
-                 if not v.get("archived") and srs.is_due(v, today)]
-        weak_ids = planner.weak_knowledge_ids(
-            store.load("mistakes"), store.load("records"))
-        kp = {k["id"]: k for k in store.load("knowledge")}
-        settings = store.load("settings")
-        return jsonify({
-            "date": today.isoformat(),
-            "due_mistakes": mistakes,
-            "due_vocab": vocab,
-            "weak": [{"id": i, "name": kp[i]["name"], "subject": kp[i]["subject"]}
-                     for i in weak_ids if i in kp],
-            "exam_phase": planner.exam_phase(settings.get("exam_date"), today),
-            "daily_minutes": settings.get("daily_minutes"),
-        })
-
     # ---------- plan ----------
     def _plan():
         plan = store.load("plan")
@@ -780,79 +550,6 @@ def create_app(data_dir=None, backup_dir=None):
         ]
         return jsonify(summary)
 
-    # ---------- images / AI ----------
-    @app.post("/api/upload")
-    def upload_image():
-        f = request.files.get("file")
-        if not f:
-            return _bad("缺少文件字段 file")
-        ext = os.path.splitext(f.filename or "")[1].lower()
-        if ext not in ALLOWED_IMAGE_EXT:
-            return _bad("仅支持图片格式:%s" % "、".join(sorted(ALLOWED_IMAGE_EXT)))
-        data = f.read()
-        if len(data) > 15 * 1024 * 1024:
-            return _bad("图片超过 15MB,请压缩后上传")
-        os.makedirs(IMAGES_DIR, exist_ok=True)
-        name = "img-%s-%s%s" % (datetime.datetime.now().strftime("%Y%m%d%H%M%S"),
-                                os.urandom(3).hex(), ext)
-        with open(os.path.join(IMAGES_DIR, name), "wb") as fp:
-            fp.write(data)
-        warning = ""
-        if len(data) < 20 * 1024:
-            warning = "图片文件较小,可能不清晰;可先保存图片,稍后补充题目文字"
-        return jsonify({"file": name, "size": len(data), "url": "/api/images/" + name,
-                        "warning": warning})
-
-    @app.get("/api/images/<name>")
-    def get_image(name):
-        if not re_fullsafe_name(name):
-            return _bad("非法文件名", 400)
-        path = os.path.join(IMAGES_DIR, name)
-        if not os.path.isfile(path):
-            return _bad("图片不存在", 404)
-        return send_from_directory(IMAGES_DIR, name)
-
-    @app.get("/api/ai/status")
-    def ai_status():
-        cfg = _ai_cfg()
-        models = ai_mod.list_local_models() if cfg.get("mode") == "local" else []
-        if cfg.get("available"):
-            hint = None
-        elif cfg.get("mode") == "local" and not cfg.get("service_ok"):
-            hint = "本地 Ollama 服务未运行:从开始菜单打开 Ollama(或在终端运行 ollama serve),然后刷新本页。"
-        elif cfg.get("mode") == "local" and not cfg.get("model"):
-            hint = "本地服务已连接但未选择模型:到「设置 → AI 模型」从已下载模型中选择。"
-        else:
-            hint = ai_mod.SETUP_HINT
-        return jsonify({"mode": cfg.get("mode", "local"),
-                        "available": cfg.get("available", False),
-                        "service_ok": cfg.get("service_ok", False),
-                        "base_url": cfg.get("base_url", ""),
-                        "model": cfg.get("model", ""),
-                        "vision_model": cfg.get("vision_model", ""),
-                        "models": models,
-                        "hint": hint})
-
-    @app.get("/api/ai/models")
-    def ai_models():
-        return jsonify(ai_mod.list_local_models())
-
-    @app.post("/api/ai/recognize")
-    def ai_recognize():
-        body = request.get_json(force=True, silent=True) or {}
-        name = body.get("file") or ""
-        if not re_fullsafe_name(name):
-            return _bad("非法文件名")
-        path = os.path.join(IMAGES_DIR, name)
-        if not os.path.isfile(path):
-            return _bad("图片不存在,请先上传", 404)
-        with open(path, "rb") as fp:
-            data = fp.read()
-        ext = os.path.splitext(name)[1].lower()
-        mime = "image/png" if ext == ".png" else "image/jpeg"
-        result = ai_mod.recognize_mistake(data, body.get("hint") or "", _ai_cfg(), mime)
-        return jsonify(result)
-
     # ---------- reflections ----------
     @app.post("/api/reflections/extract")
     def reflect_extract():
@@ -905,80 +602,6 @@ def create_app(data_dir=None, backup_dir=None):
             return _bad("记录不存在", 404)
         store.save("reflections", remain)
         return jsonify({"deleted": rid})
-
-    # ---------- coach ----------
-    def _coach_context():
-        """检索式上下文:只取结论与关键数字,不塞全量历史。"""
-        mistakes = store.load("mistakes")
-        records = store.load("records")
-        knowledge = store.load("knowledge")
-        reflections = store.load("reflections")
-        today = _today()
-        prof = profile_mod.compute_profile(mistakes, records, reflections,
-                                           knowledge, store.load("catalog"), store.load("settings"),
-                                           today)
-        lines = []
-        LEVEL_TXT = ["未开始", "基础薄弱", "中等", "熟练"]
-        for sub, s in prof["subjects"].items():
-            acc = "%s%%" % s["accuracy"] if s["accuracy"] is not None else "无"
-            lv = ((store.load("settings").get("subjects") or {}).get(sub) or {}).get("level")
-            lv_txt = "(自评:%s)" % LEVEL_TXT[lv] if isinstance(lv, int) and 0 <= lv <= 3 else ""
-            lines.append("%s:知识点%d个(进度%d%%),累计做题%d,正确率%s%s" % (
-                SUBJECT_NAMES.get(sub, sub), s["knowledge_total"], s["progress_pct"],
-                s["attempted"], acc, lv_txt))
-        for w in prof["weak_points"][:5]:
-            lines.append("薄弱点[%s] %s:%s(置信度%.0f%%)%s" % (
-                w["status"], w["name"], w["judgment"], w["confidence"] * 100,
-                ";证据:" + ";".join(e["text"] for e in w["evidence"][:2])))
-        if prof["error_patterns"]:
-            p = prof["error_patterns"][0]
-            lines.append("高频错误模式:%s(近14天%d次)" % (p["reason"], p["count"]))
-        for ref in reflections[-3:]:
-            ex = ref.get("extracted") or {}
-            if ex.get("content"):
-                lines.append("%s反思:%s%s" % (
-                    ref.get("date", ""), ex.get("content", "")[:60],
-                    ("(状态:%s)" % ex["mood"]) if ex.get("mood") else ""))
-        due = [m for m in mistakes if not m.get("archived") and srs.is_due(m, today)]
-        lines.append("当前到期错题 %d 条;今日 %s" % (len(due), today.isoformat()))
-        return "\n".join(lines)
-
-    @app.post("/api/coach/chat")
-    def coach_chat():
-        body = request.get_json(force=True, silent=True) or {}
-        message = (body.get("message") or "").strip()
-        if not message:
-            return _bad("message 必填")
-        chats = store.load("coach")
-        history = [{"role": c["role"], "content": c["content"]}
-                   for c in chats[-8:]]
-        context = _coach_context()
-        result = ai_mod.coach_reply(message, context, _ai_cfg(), history)
-        now = datetime.datetime.now().isoformat(timespec="seconds")
-        chats.append({"id": _next_id(chats, "cc"), "role": "user",
-                      "content": message, "date": now})
-        if result.get("reply"):
-            chats.append({"id": _next_id(chats, "cc"), "role": "assistant",
-                          "content": result["reply"], "date": now})
-        else:
-            chats.append({"id": _next_id(chats, "cc"), "role": "assistant",
-                          "content": "[系统] " + result.get("error", "AI 不可用"),
-                          "date": now, "system": True})
-        store.save("coach", chats)
-        return jsonify(result)
-
-    @app.get("/api/coach/history")
-    def coach_history():
-        items = store.load("coach")
-        limit = request.args.get("limit", type=int)
-        if limit:
-            items = items[-limit:]
-        return jsonify(items)
-
-    @app.delete("/api/coach/history")
-    def coach_clear():
-        store.save("coach", [])
-        return jsonify({"cleared": True})
 
     # ---------- profile & weekly report ----------
     @app.get("/api/profile")
@@ -1176,194 +799,6 @@ def create_app(data_dir=None, backup_dir=None):
         return jsonify({"ok": True, "cleared": cleared})
 
     # ---------- 题库 ----------
-    @app.get("/api/questions")
-    def questions_list():
-        items = [q for q in store.load("questions") if not q.get("archived")]
-        subject = request.args.get("subject")
-        qtype = request.args.get("source_type")
-        year = request.args.get("year", type=int)
-        q_ = (request.args.get("q") or "").lower()
-        ai_only = request.args.get("ai") == "1"
-        if subject:
-            items = [x for x in items if x["subject"] == subject]
-        if qtype:
-            items = [x for x in items if x.get("source_type") == qtype]
-        if year:
-            items = [x for x in items if x.get("year") == year]
-        if ai_only:
-            items = [x for x in items if x.get("ai_generated")]
-        if q_:
-            items = [x for x in items if q_ in (x["question_md"] + (x.get("source_desc") or "")).lower()]
-        page = max(1, request.args.get("page", 1, type=int))
-        per = min(100, max(10, request.args.get("per", 50, type=int)))
-        return jsonify({"items": items[(page - 1) * per: page * per],
-                        "total": len(items), "page": page, "per": per,
-                        "pages": (len(items) + per - 1) // per})
-
-    @app.post("/api/questions")
-    def questions_add():
-        from . import questionbank as QB
-        body = request.get_json(force=True, silent=True) or {}
-        q, err = QB.validate_question(body)
-        if err:
-            return _bad(err)
-        items = store.load("questions")
-        if any(x["content_hash"] == q["content_hash"] for x in items):
-            return _bad("题干已存在(内容哈希重复),拒绝重复录入")
-        rec = QB.new_question_record(q, len(items) + 1)
-        items.append(rec)
-        store.save("questions", items)
-        return jsonify(rec), 201
-
-    @app.delete("/api/questions/<qid>")
-    def questions_delete(qid):
-        items = store.load("questions")
-        remain = [x for x in items if x["id"] != qid]
-        if len(remain) == len(items):
-            return _bad("题目不存在", 404)
-        store.save("questions", remain)
-        return jsonify({"deleted": qid})
-
-    @app.post("/api/questions/import")
-    def questions_import():
-        """批量导入(去重+逐条校验,返回明细;不合法条目跳过不阻断)。"""
-        from . import questionbank as QB
-        body = request.get_json(force=True, silent=True) or {}
-        items_in = body.get("items")
-        if not isinstance(items_in, list) or not items_in:
-            return _bad("items 必须是非空数组")
-        if len(items_in) > 500:
-            return _bad("单次导入上限 500 题")
-        valid, report = QB.import_questions(items_in)
-        if valid:
-            existing = store.load("questions")
-            have = {x["content_hash"] for x in existing}
-            added = 0
-            for q in valid:
-                if q["content_hash"] in have:
-                    report["duplicates"].append({"hash": q["content_hash"]})
-                    continue
-                existing.append(QB.new_question_record(q, len(existing) + 1))
-                have.add(q["content_hash"])
-                added += 1
-            store.save("questions", existing)
-            report["added"] = added
-        report["ai_generated_count"] = sum(1 for q in valid if q.get("ai_generated"))
-        auth_mod.audit(store, "questions_imported",
-                       "新增%d/重复%d/无效%d" % (report["added"],
-                                                len(report["duplicates"]),
-                                                len(report["invalid"])))
-        return jsonify(report)
-
-    @app.get("/api/questions/practice")
-    def questions_practice_pool():
-        """抽题练习池:默认 5 题,按科目/难度过滤,优先非 AI 生成历史真题。"""
-        items = [q for q in store.load("questions") if not q.get("archived")]
-        subject = request.args.get("subject")
-        if subject:
-            items = [q for q in items if q["subject"] == subject]
-        import random as _random
-        _random.shuffle(items)
-        # AI 生成题排后(真题优先)
-        items.sort(key=lambda x: bool(x.get("ai_generated")))
-        take = items[:max(1, min(20, request.args.get("n", 5, type=int)))]
-        return jsonify(take)
-
-    # ---------- 每日训练 ----------
-    @app.get("/api/train/daily")
-    def train_daily():
-        from . import training as TR
-        date_str = request.args.get("date") or _today().isoformat()
-        t = TR.build_daily(store, date_str, force=request.args.get("force") == "1")
-        questions = {q["id"]: q for q in store.load("questions")}
-        items = []
-        for ref in t.get("questions") or []:
-            q = questions.get(ref["id"])
-            if q:
-                ans = (t.get("answers") or {}).get(q["id"])
-                items.append({k: q[k] for k in (
-                    "id", "subject", "question_md", "options", "answer",
-                    "solution_md", "qtype", "difficulty", "source_type",
-                    "ai_generated", "knowledge_ids")} | {
-                    "answered": bool(ans), "result": (ans or {}).get("correct")})
-        settings = store.load("settings")
-        quotas = ((settings.get("daily_train") or {}).get("quotas")
-                  or {"math": 5, "cs408": 5, "english": 5, "politics": 5})
-        return jsonify({"date": t["date"], "items": items,
-                        "quotas": quotas, "shortage": t.get("shortage") or {},
-                        "done": len(t.get("answers") or {}),
-                        "correct": sum(1 for a in (t.get("answers") or {}).values() if a.get("correct"))})
-
-    @app.post("/api/train/answer")
-    def train_answer():
-        from . import training as TR
-        body = request.get_json(force=True, silent=True) or {}
-        qid = body.get("qid")
-        questions = {q["id"]: q for q in store.load("questions")}
-        q = questions.get(qid)
-        if not q:
-            return _bad("题目不存在", 404)
-        picked = body.get("picked")
-        correct = (bool(q.get("options")) and picked == q.get("answer")) or \
-                  (not q.get("options") and bool(body.get("self_correct")))
-        t = TR.record_answer(store, qid, picked, correct,
-                             body.get("seconds"), body.get("error_tag"))
-        auth_mod.audit(store, "train_answer", "%s %s" % (qid, "对" if correct else "错"))
-        return jsonify({"correct": correct, "answer": q.get("answer"),
-                        "solution_md": q.get("solution_md", ""),
-                        "done": len(t.get("answers") or {})})
-
-    @app.post("/api/train/finish")
-    def train_finish():
-        """当日成绩汇总写入练习记录(幂等:同日同科目只记一条)。"""
-        t = store.load("train")
-        answers = t.get("answers") or {}
-        if not answers:
-            return _bad("还没有作答")
-        questions = {q["id"]: q for q in store.load("questions")}
-        by_sub = {}
-        for qid, a in answers.items():
-            q = questions.get(qid)
-            if not q:
-                continue
-            s = by_sub.setdefault(q["subject"], {"total": 0, "correct": 0, "kids": set()})
-            s["total"] += 1
-            s["correct"] += 1 if a.get("correct") else 0
-            for kid in q.get("knowledge_ids") or []:
-                s["kids"].add(kid)
-        out = []
-        for sub, v in by_sub.items():
-            items = store.load("records")
-            cid = "train-" + t["date"] + "-" + sub
-            rec = next((r for r in items if r.get("client_id") == cid), None)
-            if not rec:
-                rec = {"id": _next_id(items, "rc"), "client_id": cid,
-                       "date": t["date"], "subject": sub,
-                       "session_type": "daily_train",
-                       "knowledge_ids": list(v["kids"]),
-                       "total": v["total"], "correct": v["correct"],
-                       "duration_min": None, "detail": []}
-                items.append(rec)
-                store.save("records", items)
-            out.append(rec["id"])
-        return jsonify({"ok": True, "records": out})
-
-    @app.put("/api/train/settings")
-    def train_settings():
-        body = request.get_json(force=True, silent=True) or {}
-        quotas = body.get("quotas")
-        if not isinstance(quotas, dict):
-            return _bad("quotas 必须是 {subject: 数量}")
-        for k, v in quotas.items():
-            if k not in SUBJECTS:
-                return _bad("未知科目:%s" % k)
-            if not (isinstance(v, int) and 0 <= v <= 50):
-                return _bad("%s 数量须为 0-50 的整数" % k)
-        cur = store.load("settings")
-        cur["daily_train"] = {"quotas": quotas}
-        store.save("settings", cur)
-        return jsonify({"ok": True, "quotas": quotas})
-
     # ---------- 经验帖 ----------
     @app.get("/api/experience")
     def experience_list():
@@ -1801,6 +1236,11 @@ def create_app(data_dir=None, backup_dir=None):
             items = [i for i in items if i.get("subject") == args["subject"]]
         if args.get("favorite") == "1":
             items = [i for i in items if i.get("favorite")]
+        q_ = (args.get("q") or "").lower()
+        if q_:
+            items = [i for i in items
+                     if q_ in (i.get("title", "") + i.get("summary", "")).lower()]
+
         def _pub_key(i):
             sc = (i.get("score") or {}).get("total")
             return (i.get("published_at") or "0000", -(sc or 0))
@@ -2229,6 +1669,51 @@ def create_app(data_dir=None, backup_dir=None):
                         "channels": items,
                         "principles": "仅官方接口与合法公开信息;不绕过登录/验证码/反爬;"})
 
+    @app.get("/api/radar/analyze/<rid>")
+    def radar_analyze(rid):
+        """经验贴拆解:AI 可用则按摘要提炼,否则规则提炼,generator 如实标注。
+        只依据库内标题/摘要,不编造作者、分数、结果。"""
+        it = next((x for x in store.load("radar") if x["id"] == rid), None)
+        if not it:
+            return _bad("内容不存在", 404)
+        summary = it.get("summary") or ""
+        sub_name = {"math": "数学一", "cs408": "408", "english": "英语一",
+                    "politics": "政治", "general": "通用"}.get(it.get("subject"), "通用")
+        out = {
+            "id": rid, "title": it["title"], "url": it["url"],
+            "method": "摘要未提供足够细节,点击原文查看完整方法。",
+            "background": "作者背景以原文自述为准,系统未核验。",
+            "audience": "适合关注「%s」的考生" % sub_name,
+            "limits": ("仅摘要信息(来源:%s),完整性以原文为准;" % it.get("platform", "未知"))
+                      + ("日期未核验。" if not it.get("published_at")
+                         else "发布于 %s。" % it["published_at"]),
+            "generator": "rule", "model": "",
+        }
+        try:
+            cfg = ai_mod.get_ai_config(store.load("settings"))
+            if cfg.get("available") and summary:
+                raw = json.dumps({"title": it["title"], "summary": summary},
+                                 ensure_ascii=False)
+                resp, err = ai_mod._post_chat(cfg, [
+                    {"role": "system", "content":
+                        "你是备考分析助手。仅依据给定标题与摘要,输出 JSON:"
+                        '{"method":"作者用了什么方法(≤60字,原文没有就写原文未提供)",'
+                        '"background":"作者背景(原文未提供就写原文未提供)",'
+                        '"audience":"适合什么人群/阶段(≤50字)",'
+                        '"limits":"局限与注意事项(≤60字)"}'
+                        "禁止编造分数、录取结果、作者身份。"},
+                    {"role": "user", "content": raw}], timeout=45, json_mode=True)
+                if not err and resp:
+                    data = ai_mod._parse_json_loose(resp)
+                    if data:
+                        for k in ("method", "background", "audience", "limits"):
+                            if data.get(k):
+                                out[k] = str(data[k])[:120]
+                        out["generator"], out["model"] = "ai", cfg.get("model", "")
+        except Exception:
+            pass  # AI 失败保留规则版
+        return jsonify(out)
+
     # ---------- 成长时间线 ----------
     @app.get("/api/growth/timeline")
     def growth_timeline():
@@ -2414,106 +1899,6 @@ def create_app(data_dir=None, backup_dir=None):
                      "date": datetime.datetime.now().isoformat(timespec="seconds")})
         store.save("search_records", recs[-200:])
         return jsonify({"items": out, "total": data.get("total_count", len(out))})
-
-    @app.post("/api/coach/chat/stream")
-    def coach_chat_stream():
-        """流式教练回复(NDJSON)。真实状态:检索→生成→完成/失败,无假动画。"""
-        body = request.get_json(force=True, silent=True) or {}
-        message = (body.get("message") or "").strip()
-        if not message:
-            return _bad("message 必填")
-        cfg = _ai_cfg()
-        if not cfg.get("available"):
-            return jsonify({"error": ai_mod.SETUP_HINT,
-                            "ai_available": False}), 200
-        chats = store.load("coach")
-        history = [{"role": c["role"], "content": c["content"]} for c in chats[-8:]]
-        context = _coach_context()
-
-        def gen():
-            reply_text = None
-            proposal = None
-            try:
-                for chunk in ai_mod.coach_stream(message, context, cfg, history):
-                    if chunk.get("error"):
-                        yield json.dumps({"error": chunk["error"]},
-                                         ensure_ascii=False) + "\n"
-                        auth_mod.audit(store, "coach_stream_error", chunk["error"])
-                        return
-                    if chunk.get("delta"):
-                        yield json.dumps({"delta": chunk["delta"]},
-                                         ensure_ascii=False) + "\n"
-                    if chunk.get("done"):
-                        reply_text = chunk["reply"]
-                        proposal = chunk.get("proposal")
-                        yield json.dumps({"done": True, "elapsed": chunk["elapsed"],
-                                          "proposal": proposal},
-                                         ensure_ascii=False) + "\n"
-            except GeneratorExit:
-                return
-            finally:
-                now = datetime.datetime.now().isoformat(timespec="seconds")
-                chats.append({"id": _next_id(chats, "cc"), "role": "user",
-                              "content": message, "date": now})
-                chats.append({"id": _next_id(chats, "cc"),
-                              "role": "assistant",
-                              "content": reply_text or ("[系统] 生成失败"),
-                              "date": now,
-                              "system": reply_text is None})
-                store.save("coach", chats[-100:])
-                if reply_text:
-                    auth_mod.audit(store, "coach_replied", "耗时见对话")
-
-        return app.response_class(gen(), mimetype="application/x-ndjson")
-
-    TOOL_WHITELIST = {
-        "create_task": {"subject", "title", "est_minutes"},
-        "create_milestone": {"title", "target_date"},
-    }
-
-    @app.post("/api/tools/execute")
-    def tools_execute():
-        """执行 AI 提案的工具动作(白名单;必须由用户在前端点击确认后调用)。"""
-        body = request.get_json(force=True, silent=True) or {}
-        tool = body.get("tool")
-        args = body.get("args") or {}
-        if tool not in TOOL_WHITELIST:
-            return _bad("不支持的工具:%s(白名单:%s)" % (tool, "、".join(TOOL_WHITELIST)))
-        if tool == "create_task":
-            subject = args.get("subject")
-            title = (args.get("title") or "").strip()
-            est = min(int(args.get("est_minutes") or 20), 120)
-            if subject not in SUBJECTS or not title:
-                return _bad("创建任务需要合法 subject 与 title")
-            today = _today().isoformat()
-            plan = store.load("plan")
-            day = plan.setdefault("days", {}).setdefault(
-                today, {"tasks": []})
-            task = {"id": "tk-ai-%s-%s" % (today.replace("-", ""), os.urandom(3).hex()),
-                    "subject": subject, "kind": "practice", "title": title[:80],
-                    "payload": {"ai_proposed": True}, "est_minutes": est,
-                    "goal": "AI 建议(已由你确认)", "standard": "", 
-                    "reason": "由 AI 教练提案、你手动确认创建",
-                    "status": "pending", "actual_minutes": None, "note": ""}
-            day["tasks"].append(task)
-            store.save("plan", plan)
-            auth_mod.audit(store, "ai_tool_create_task", title[:60])
-            return jsonify({"ok": True, "task": task})
-        if tool == "create_milestone":
-            title = (args.get("title") or "").strip()
-            if not title:
-                return _bad("里程碑标题必填")
-            goals = store.load("goals")
-            ms = goals.setdefault("milestones", [])
-            item = {"id": "ms-ai-%s" % os.urandom(3).hex(), "title": title[:80],
-                    "target_date": args.get("target_date") or None, "done": False,
-                    "done_date": None,
-                    "created": datetime.datetime.now().isoformat(timespec="seconds")}
-            ms.append(item)
-            store.save("goals", goals)
-            auth_mod.audit(store, "ai_tool_create_milestone", title[:60])
-            return jsonify({"ok": True, "milestone": item})
-        return _bad("未实现")
 
     @app.get("/api/data-quality")
     def data_quality():

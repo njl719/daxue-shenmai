@@ -56,6 +56,9 @@ def validate_question(q):
     q["answer"] = str(q.get("answer") or "").strip().upper()
     q["solution_md"] = q.get("solution_md") or ""
     q["source_desc"] = q.get("source_desc") or ""
+    q["source_url"] = q.get("source_url") or ""   # 统一来源字段:核验前为空
+    q["verified_at"] = None
+    q["updated_at"] = None
     q["knowledge_ids"] = q.get("knowledge_ids") or []
     if q["options"] and len(q["options"]) >= 2:
         if q["answer"] not in [chr(65 + i) for i in range(len(q["options"]))]:

@@ -32,12 +32,20 @@ def test_institution_validation(client):
     assert rv.status_code == 400
 
 
+def _seed_mistake(store, mid, q, solution, reason, subject="math"):
+    ms = store.load("mistakes")
+    ms.append({"id": mid, "subject": subject, "question_md": q, "knowledge_ids": [],
+               "qtype": "计算", "difficulty": 3, "options": [], "answer": "",
+               "error_reason": reason, "solution_md": solution, "lapses": 0,
+               "ease": 2.5, "interval_days": 0, "reviews": [], "next_review": None,
+               "archived": False, "seed": False, "created": "2026-10-31T08:00:00"})
+    store.save("mistakes", ms)
+
+
 def test_data_quality_metrics(client):
-    # 一条缺解析、一条正常
-    client.post("/api/mistakes", json={"subject": "math", "question_md": "甲题",
-                                       "solution_md": "", "error_reason": ""})
-    client.post("/api/mistakes", json={"subject": "math", "question_md": "乙题",
-                                       "solution_md": "有解析", "error_reason": "计算失误"})
+    # 一条缺解析、一条正常(历史数据直插;错题 API 已移除)
+    _seed_mistake(client.store, "mk-dq1", "甲题", "", "")
+    _seed_mistake(client.store, "mk-dq2", "乙题", "有解析", "计算失误")
     j = client.get("/api/data-quality").get_json()
     assert j["mistakes"]["total"] >= 2
     assert j["mistakes"]["missing_solution"] >= 1
@@ -46,44 +54,12 @@ def test_data_quality_metrics(client):
 
 
 def test_data_quality_duplicate_detection(client):
-    for _ in range(2):
-        client.post("/api/mistakes", json={
-            "subject": "cs408", "question_md": "TCP 建立连接需要几次?",
-            "solution_md": "3 次", "error_reason": "记忆混淆"})
+    _seed_mistake(client.store, "mk-dup1", "TCP 建立连接需要几次?", "3 次",
+                  "记忆混淆", subject="cs408")
+    _seed_mistake(client.store, "mk-dup2", "TCP 建立连接需要几次?", "3 次",
+                  "记忆混淆", subject="cs408")
     j = client.get("/api/data-quality").get_json()
     assert j["mistakes"]["duplicates"] >= 1
-
-
-def test_tools_whitelist(client):
-    # 白名单外工具拒绝
-    rv = client.post("/api/tools/execute", json={
-        "tool": "delete_everything", "args": {}})
-    assert rv.status_code == 400
-    # create_task 需合法科目
-    rv = client.post("/api/tools/execute", json={
-        "tool": "create_task", "args": {"subject": "geography", "title": "x"}})
-    assert rv.status_code == 400
-    # 合法创建
-    rv = client.post("/api/tools/execute", json={
-        "tool": "create_task", "args": {"subject": "math", "title": "积分换元专项",
-                                        "est_minutes": 20}})
-    assert rv.status_code == 200
-    j = rv.get_json()
-    assert j["task"]["payload"].get("ai_proposed") is True
-    # 今天计划里确实存在
-    import datetime
-    today = datetime.date.today().isoformat()
-    plan = client.get("/api/plan/day/" + today).get_json()
-    assert any(t["id"] == j["task"]["id"] for t in plan["tasks"])
-
-
-def test_stream_endpoint_requires_ai(client):
-    """AI 不可用时流式端点返回明确错误(本机 Ollama 在运行,故应正常流式;
-    此处仅验证端点存在与响应格式)。"""
-    rv = client.post("/api/coach/chat/stream", json={"message": "你好"})
-    assert rv.status_code == 200
-    data = rv.data.decode("utf-8")
-    assert "delta" in data or "error" in data or "done" in data
 
 
 def test_politics_subject_available(client):
