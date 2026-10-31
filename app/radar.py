@@ -420,7 +420,45 @@ KEYWORD_POOL = [
     "考研 长难句 分析 技巧", "{y}考研 王道 408 笔记",
     "考研 碎片时间 利用 方法", "{y}考研 进度 落后 怎么办",
     "考研 睡眠 作息 安排", "{y}考研 跨考 计算机 经验",
+    # V2.0 决策与情报定向词
+    "{y}考研 择校 计算机", "27考研 复盘 上岸", "26考研 失败 复盘 教训",
+    "{y}考研 数学一 经验", "{y}考研 408 上岸 经验", "考研 择校 报录比",
+    "考研 后期 心态 崩了 怎么办", "考研 上岸故事 真实",
 ]
+
+CATEGORY_NAMES = {
+    "admit": "上岸经验", "fail": "失败复盘", "choose": "院校选择",
+    "method": "学习方法", "plan": "备考规划", "material": "资料推荐",
+    "mind": "心态调整", "story": "励志故事", "hot": "热点讨论",
+    "avoid": "避坑建议",
+}
+
+_CAT_RULES = [
+    ("avoid", ("避坑", "被坑", "套路", "警惕", "被骗", "劝退")),
+    ("fail", ("失败", "没考上", "落榜", "二战失败", "后悔", "弃考", "滑档")),
+    ("admit", ("上岸", "拟录取", "录取经验", "一战成硕", "400分", "高分经验")),
+    ("choose", ("择校", "选学校", "院校推荐", "报录比", "院校选择", "招生人数")),
+    ("material", ("资料", "网课", "讲义", "书推荐", "用什么书", "必买")),
+    ("mind", ("焦虑", "心态", "崩溃", "失眠", "压力大", "emo", "疲惫")),
+    ("plan", ("规划", "计划", "时间表", "进度", "安排", "冲刺阶段", "月计划")),
+    ("method", ("方法", "技巧", "复盘", "错题", "刷题", "怎么复习", "正确率")),
+    ("story", ("励志", "逆袭", "感动", "坚持")),
+]
+
+
+def classify_category(ctype, title, snippet=""):
+    """内容归入 V2.0 十类(关键词规则,可解释;逐条保存在 category 字段)。"""
+    text = (title or "") + " " + (snippet or "")
+    if ctype == "policy":
+        return "hot"  # 招生政策归入热点讨论(院校选择细节由用户在数据层看)
+    if ctype == "mindset":
+        return "mind"
+    if ctype == "warn":
+        return "avoid"
+    for cat, kws in _CAT_RULES:
+        if any(k in text for k in kws):
+            return cat
+    return "hot"
 
 
 def pick_keywords(state, count=6):
@@ -468,7 +506,7 @@ def refresh(store, settings, today=None, budget_s=90):
              "added": 0, "duplicates": 0, "rejected": 0, "failed": 0,
              "bucket_7d": 0, "bucket_30d": 0, "bucket_90d": 0, "older": 0, "unknown_date": 0}
 
-    # 用户上下文(相关性评分用)
+    # 用户上下文(相关性评分用);persona 方向驱动关键词扩展
     goals = store.load("goals") or {}
     subs_conf = (settings or {}).get("subjects") or {}
     user_ctx = {
@@ -477,9 +515,15 @@ def refresh(store, settings, today=None, budget_s=90):
         "target_school": goals.get("institution") or "",
         "stage": stage_of(today), "ctype_weights": state.get("ctype_weights") or {},
     }
+    persona = store.load("persona") or {}
+    exam_year = persona.get("exam_year") or today.year + 1
+    kws = pick_keywords(state, max_queries)
+    if persona.get("directions"):
+        dirs = " ".join(persona["directions"][:2])
+        kws = list(kws)  # persona 驱动:方向词并入本轮检索
+        kws[0] = "%s考研 %s" % (str(exam_year)[-2:], dirs)
 
     cands = []
-    kws = pick_keywords(state, max_queries)
     for kw in kws:
         if time.time() - t0 > budget_s * 0.7:
             break
@@ -632,7 +676,8 @@ def refresh(store, settings, today=None, budget_s=90):
             "verify_status": c["verify_status"],
             "subject": subject, "tags": [],
             "stage": "通用" if ctype in ("policy", "warn", "hot") and subject == "general" else user_ctx["stage"],
-            "ctype": ctype, "marketing_hits": hits,
+            "ctype": ctype, "category": classify_category(ctype, c["title"], c.get("snippet", "")),
+            "marketing_hits": hits,
             "heat": None,
             "score": None, "recommend_reason": "", "action_advice": "",
             "shown": False, "favorite": False, "hidden": False,
@@ -761,6 +806,27 @@ def user_snapshot(store, settings, today=None):
             acc_by_sub[s] = {"n": n, "acc": round(100 * c / n)}
     weak = min(acc_by_sub.items(), key=lambda kv: kv[1]["acc"]) if acc_by_sub else None
 
+    # V2.0:persona 阶段与模拟成绩趋势(真实录入数据,不使用主观评价)
+    persona = store.load("persona") or {}
+    days_left = None
+    try:
+        exam = datetime.date(int(persona.get("exam_year") or 2028), 12, 1)
+        days_left = (exam - today).days
+    except (ValueError, TypeError, KeyError):
+        pass
+    mock_trend = None
+    rows = [m for m in store.load("mock_scores") if m.get("subject") in ("math", "cs408")]
+    by_m = {}
+    for m in rows:
+        by_m.setdefault(m["subject"], []).append(m)
+    for sub, ms in by_m.items():
+        ms = sorted(ms, key=lambda r: r.get("month") or "")[-2:]
+        if len(ms) == 2 and ms[0].get("full_mark"):
+            delta = (ms[1]["score"] - ms[0]["score"]) / ms[0]["full_mark"]
+            if delta <= -0.08:
+                mock_trend = {"subject": sub, "delta_pct": round(100 * delta)}
+                break
+
     return {
         "has_records": bool(records or answers),
         "today": {"done": done, "total": total, "correct": correct},
@@ -770,6 +836,8 @@ def user_snapshot(store, settings, today=None):
         "error_tags": top_tags, "acc_by_subject": acc_by_sub,
         "weak_subject": weak[0] if weak else None,
         "stage": stage_of(today),
+        "days_left": days_left, "mock_trend": mock_trend,
+        "exam_year": (persona or {}).get("exam_year") or 2028,
     }
 
 
@@ -778,6 +846,16 @@ NEED_TEMPLATES = {
         "why": "还没有足够的学习记录,系统不假装了解你的状态。",
         "action": "今天先完成每日训练 20 题(四科各 5 题),做完后系统才能基于真实数据给建议。",
         "metric": "完成 20 题;明天的建议将基于今天的正确率与错题标签。",
+    },
+    "key_stage": {
+        "why": "距离 {exam_year} 考试约 {days_left} 天,进入关键阶段;此时拼的是稳定输出而非新花样。",
+        "action": "把每日任务砍到可 100% 完成的最小集:到期错题复测 + 每科 1 组保持性练习;新增内容只补最薄弱一科。",
+        "metric": "本周计划完成率 ≥ 90%;不因赶进度牺牲睡眠。",
+    },
+    "mock_drop": {
+        "why": "{mock_subject} 最近两次模拟成绩下滑约 {mock_delta}%,波动本身是信息不是判决。",
+        "action": "把最近两次模拟卷的丢分点各归成三类(概念/计算/审题),找出膨胀最快的一类,今天只针对它做 5 题专项。",
+        "metric": "下次同科模拟,该类丢分不超过总丢分的 1/3;若继续下滑,降低难度回归基础讲义。",
     },
     "shrink": {
         "why": "今日完成率偏低({done}/{total}),与其自责不如缩小任务。",
@@ -818,8 +896,13 @@ NEED_TEMPLATES = {
 
 
 def pick_need(snap):
+    days = snap.get("days_left")
+    if days is not None and 0 < days <= 100:
+        return "key_stage"
     if not snap["has_records"]:
         return "baseline"
+    if snap.get("mock_trend"):
+        return "mock_drop"
     t, w = snap["today"], snap["week"]
     hour = datetime.datetime.now().hour
     if t["total"] and t["done"] / t["total"] < 0.5 and hour >= 18:
@@ -851,6 +934,11 @@ def _fmt(template, snap):
     t = t.replace("{english_acc}", str(e.get("acc", "—")))
     tg = snap["error_tags"][0][0] if snap["error_tags"] else "未标注"
     t = t.replace("{top_tag}", tg).replace("{due}", str(snap["due_today"]))
+    t = t.replace("{exam_year}", str(snap.get("exam_year") or 2028))
+    t = t.replace("{days_left}", str(snap.get("days_left") or "—"))
+    mt = snap.get("mock_trend") or {}
+    t = t.replace("{mock_subject}", SUBJECT_NAMES.get(mt.get("subject"), mt.get("subject") or "—"))
+    t = t.replace("{mock_delta}", str(abs(mt.get("delta_pct") or 0)))
     return t
 
 

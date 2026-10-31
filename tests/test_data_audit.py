@@ -31,8 +31,14 @@ def test_migration_v7_source_fields(tmp_path):
     notes = run_migrations(store)
     import json as J
     ver = J.load(open(str(tmp_path / "d") + "/schema_version.json", encoding="utf-8"))
-    assert ver["version"] == SCHEMA_VERSION == 7
-    assert any("v6→v7" in n for n in notes)
+    assert ver["version"] == SCHEMA_VERSION == 8  # v7 来源字段 + v8 决策数据层
+    assert any("v6→v7" in n for n in notes) and any("v7→v8" in n for n in notes)
+    # v8:招生分档 2028 显式未公开;画像默认值
+    recs = store.load("admission_records")
+    assert recs and all(r["plan_total"] is None for r in recs if r["year"] == 2028)
+    assert any(r["data_status"].startswith("官方未公开") for r in recs)
+    assert store.load("persona")["bachelor_school"] == "武汉商学院"
+    assert store.load("admission_changes") == []
     # 院校:source_url 空串(未核验)+ source_type=official_pending
     for u in store.load("universities"):
         assert u["source_url"] == "" and u["source_type"] == "official_pending"

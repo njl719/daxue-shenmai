@@ -15,7 +15,7 @@ import os
 from .storage import Store
 
 MIGRATIONS = []
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 POLITICS_TRACK = {
     "name": "思想政治理论(101)", "subject": "politics",
@@ -169,6 +169,57 @@ def _v6_to_v7(store):
     store.save("experience_posts", eps)
     return ("v6→v7 完成:统一来源字段补位(院校 %d/题目 %d/语录 %d/经验帖 %d,"
             "全部默认未核验)") % (n["unis"], n["qs"], n["mo"], n["ep"])
+
+
+@migration(7)
+def _v7_to_v8(store):
+    """v7→v8:V2.0 决策与情报中心数据层。
+    - admission_records:官方招生数据按 院校×年份(2026/2027/2028)分档,2028 全部显式"官方未公开";
+    - persona:个人考研画像(默认 2028/11408/软件工程/武汉商学院,全部可改);
+    - mock_scores:月度各科模拟成绩(真实成绩,拒绝主观评价预测);
+    - admission_changes:官方数据变更日志。
+    不写入任何编造的招生数字。"""
+    import datetime as _dt
+    now = _dt.datetime.now().isoformat(timespec="seconds")
+    unis = store.load("universities")
+    recs = store.load("admission_records")
+    if not recs and unis:
+        for u in unis:
+            for year in (2026, 2027, 2028):
+                recs.append({
+                    "id": "adm-%s-%d" % (u["id"], year),
+                    "uni_id": u["id"], "uni_name": u["name"],
+                    "region": u.get("city", ""), "college": u.get("cs_school", ""),
+                    "year": year,
+                    "major_code": "", "major_name": "", "major_remark":
+                        "官方未公开" if year == 2028 else "待录入(以当年目录为准)",
+                    "plan_total": None, "tuimian": None, "tongkao": None,
+                    "exam_subjects": [], "uses_408": None,
+                    "retest_subjects": "", "retest_line": None,
+                    "single_lines": {}, "retest_list_url": "",
+                    "admitted_list_url": "", "score_distribution_url": "",
+                    "tutors_url": "", "announcement_url": "",
+                    "source_name": "", "source_url": "",
+                    "published_at": None, "collected_at": now,
+                    "verified_at": None, "data_year": year,
+                    "data_status": "官方未公开(2028 尚未发布)" if year == 2028
+                                   else "待录入(须官方来源)",
+                    "source_level": None, "updated_at": None,
+                })
+        store.save("admission_records", recs)
+    if not store.load("persona"):
+        store.save("persona", {
+            "exam_year": 2028,
+            "directions": ["计算机", "软件工程", "人工智能", "电子信息"],
+            "plan": "11408", "math": "数学一", "english": "英语一",
+            "major_course": "408",
+            "bachelor_major": "软件工程", "bachelor_school": "武汉商学院",
+            "target_region": "", "note": "",
+            "updated_at": now})
+    if not store.load("admission_changes"):
+        store.save("admission_changes", [])
+    return ("v7→v8 完成:决策中心数据层(招生分档 %d 条,2028 档全部'官方未公开';"
+            "画像/模拟成绩/变更日志就绪)") % len(recs)
 
 
 def run_migrations(store):

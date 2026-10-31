@@ -1614,17 +1614,20 @@ ROUTES.intel = async (sub) => {
 const RADAR_CTYPES = { hot: "A·近期热点", exp: "B·真实经验", method: "C·学习方法",
   policy: "D·招生政策", mindset: "E·情绪压力", ai: "F·AI原创", warn: "G·警惕营销", expired: "H·已过期" };
 const VERIFY_LABEL = { verified_page: "已核验原文", snippet_only: "仅摘要·日期未核验", user_submitted: "用户提交·待核验", api: "官方API元数据" };
+let radarCats = {}, radarLevs = {};
 
 async function renderHot(host) {
   const q = new URLSearchParams(location.hash.split("?")[1] || "");
   let bucket = q.get("bucket") || "7";
   let ctype = q.get("ctype") || "";
+  let hotCat = "";
   host.innerHTML = `<div class="infobox" id="hot-status">加载中…</div>
     <div class="toolbar" style="flex-wrap:wrap;gap:8px">
       <select id="hot-bucket">${["7", "30", "90", "all"].map(b =>
         `<option value="${b}" ${bucket === b ? "selected" : ""}>${{ "7": "最近 7 天", "30": "最近 30 天", "90": "最近 90 天", all: "全部" }[b]}</option>`).join("")}</select>
       <select id="hot-ctype"><option value="">全部类型</option>${Object.entries(RADAR_CTYPES).map(([k, n]) =>
         `<option value="${k}" ${ctype === k ? "selected" : ""}>${n}</option>`).join("")}</select>
+      <select id="hot-cat"><option value="">全部分类</option></select>
       <button class="primary" id="hot-refresh">⟳ 刷新近期热点</button>
       <button id="hot-submit">＋ 提交链接</button>
       <button id="hot-fav">★ 收藏</button>
@@ -1633,6 +1636,12 @@ async function renderHot(host) {
     <div id="hot-list"></div>`;
   $("#hot-bucket").onchange = e => { bucket = e.target.value; loadList(); };
   $("#hot-ctype").onchange = e => { ctype = e.target.value; loadList(); };
+  api("/radar?bucket=all").then(d => {
+    const sel = $("#hot-cat");
+    if (sel && d.categories) sel.innerHTML = '<option value="">全部分类</option>' +
+      Object.entries(d.categories).map(([k, n]) => `<option value="${k}">${n}</option>`).join("");
+  }).catch(() => {});
+  $("#hot-cat").onchange = e => { hotCat = e.target.value; loadList(); };
   $("#hot-refresh").onclick = doRefresh;
   $("#hot-submit").onclick = submitModal;
   $("#hot-fav").onclick = () => { location.hash = "#intel/hot?bucket=all"; bucket = "all"; ctype = ""; loadList("favorite=1"); };
@@ -1642,6 +1651,7 @@ async function renderHot(host) {
     const p = new URLSearchParams();
     if (bucket !== "all" && !extra) p.set("bucket", bucket);
     if (ctype) p.set("ctype", ctype);
+    if (hotCat) p.set("category", hotCat);
     if (extra) extra.split("&").forEach(kv => { const [k2, v2] = kv.split("="); if (v2) p.set(k2, v2); });
     const d = await api("/radar?" + p.toString());
     const st = d.status || {};
@@ -1653,6 +1663,7 @@ async function renderHot(host) {
       <div class="muted" style="margin-top:6px;font-size:12px">
         通道:DuckDuckGo 公开搜索 + 研招网官方列表 + 用户提交链接。抖音/小红书无公开检索接口,不做自动抓取(不绕过登录/反爬),可用「提交链接」收录公开内容。
         ${st.last_stats ? `上次:查询 ${st.last_stats.queried} 组·候选 ${st.last_stats.candidates}·新增 ${st.last_stats.added}·重复 ${st.last_stats.duplicates}·过滤 ${st.last_stats.rejected}` : ""}</div>`;
+    radarCats = d.categories || {}; radarLevs = d.levels || {};
     $("#hot-list").innerHTML = d.items.length ? d.items.map(itemCard).join("")
       : `<div class="card"><div class="muted" style="padding:20px;text-align:center">
           ${bucket === "7" ? "最近 7 天暂无已核验发布时间的内容。可放宽到 30 天,或点击「刷新近期热点」检索。" : "暂无内容,点击「刷新近期热点」开始第一次检索。"}</div></div>`;
@@ -1692,6 +1703,8 @@ async function renderHot(host) {
       <div class="muted" style="font-size:13px;margin:6px 0">${esc(i.summary || "(无摘要)")}</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
         <span class="tag blue">${RADAR_CTYPES[i.ctype] || i.ctype}</span>
+        ${i.category ? `<span class="tag gray">${esc(radarCats[i.category] || i.category)}</span>` : ""}
+        <span class="tag ${i.source_level === "S" ? "green" : i.source_level === "AI" ? "blue" : "gray"}" title="数据可信度等级">${esc(radarLevs[i.source_level] || "来源未定")}</span>
         <span class="tag gray">${esc(i.platform)}</span>
         ${i.subject && i.subject !== "general" ? `<span class="tag gray">${SUBJECTS[i.subject] || i.subject}</span>` : ""}
         ${dateBadges}</div>
@@ -1784,6 +1797,9 @@ async function renderHomeRadar() {
   const genBadge = b.generator === "ai"
     ? `<span class="tag blue">AI 改写(${esc(b.model || "")})·事实来自真实数据</span>`
     : '<span class="tag gray">规则引擎·基于真实学习数据</span>';
+  const NEED_NAMES = { baseline: "建立基线", shrink: "缩小任务", math_method: "数学方法",
+    english_method: "英语方法", cs408_method: "408方法", advanced: "上强度",
+    maintain: "保持节奏", restart: "重启恢复", key_stage: "关键阶段", mock_drop: "成绩波动" };
   const foundBlock = b.found
     ? `<a href="${esc(b.found.url)}" target="_blank" rel="noopener">${esc(b.found.title)}</a>
        <span class="tag gray" style="margin-left:6px">${esc(b.found.platform)}${b.found.published_at ? " · " + esc(b.found.published_at) : " · 日期未核验"} · 评分 ${b.found.score}</span>`
@@ -1791,7 +1807,7 @@ async function renderHomeRadar() {
   const bf = b.feedback || {};
   const briefCard = `
     <div class="card radar-card radar-brief">
-      <h2>⚡ 今日行动建议${b.need ? `<span class="tag amber" style="margin-left:6px">${{baseline:"建立基线",shrink:"缩小任务",math_method:"数学方法",english_method:"英语方法",cs408_method:"408方法",advanced:"上强度",maintain:"保持节奏",restart:"重启恢复"}[b.need] || b.need}</span>` : ""}</h2>
+      <h2>⚡ 今日行动建议${b.need ? `<span class="tag amber" style="margin-left:6px">${NEED_NAMES[b.need] || b.need}</span>` : ""}</h2>
       <div class="bf-row"><span class="bf-key">近期发现</span><div>${foundBlock}</div></div>
       <div class="bf-row"><span class="bf-key">为什么与你有关</span><div>${esc(b.why || "")}</div></div>
       <div class="bf-row"><span class="bf-key">今天能做什么</span><div class="bf-act">${esc(b.action || "")}</div></div>
@@ -2280,10 +2296,41 @@ ROUTES.plan = async () => {
 
 /* ================= 学习画像(独立页,从作战室/成长页跳转) ================= */
 ROUTES.profile = async () => {
-  const prof = await api("/profile");
+  const [prof, persona, mock] = await Promise.all([
+    api("/profile"), api("/persona"), api("/mock-scores")]);
   let html = `<div class="page-head"><div>
-    <div class="section-label">LEARNING PROFILE</div><h1>学习画像</h1></div>
-    <span class="muted">生成于 ${esc(prof.generated_at)} · 全部结论附带证据,可纠正</span></div>`;
+    <div class="section-label">PROFILE · 个人画像与备考档案</div><h1>个人画像</h1></div>
+    <span class="muted">学习结论全部附带证据;预测类内容与事实数据分开呈现</span></div>`;
+  /* --- 考研档案(persona,可编辑) --- */
+  html += `<div class="card"><h2>🎓 考研档案(决策模型输入,全部可改)</h2>
+    <div class="row2" style="grid-template-columns:repeat(3,1fr)">
+      <div><label>考研年份</label><input id="pf-year" type="number" min="2026" max="2030" value="${persona.exam_year || 2028}"></div>
+      <div><label>本科院校</label><input id="pf-school" value="${esc(persona.bachelor_school || "")}"></div>
+      <div><label>本科专业</label><input id="pf-major" value="${esc(persona.bachelor_major || "")}"></div>
+      <div><label>方案</label><input id="pf-plan" value="${esc(persona.plan || "11408")}"></div>
+      <div><label>英语</label><input id="pf-eng" value="${esc(persona.english || "英语一")}"></div>
+      <div><label>目标地区(可空)</label><input id="pf-region" value="${esc(persona.target_region || "")}"></div>
+    </div>
+    <div style="margin-top:8px"><label>专业方向(逗号分隔)</label>
+      <input id="pf-dirs" value="${esc((persona.directions || []).join(","))}"></div>
+    <div class="toolbar" style="margin-top:10px"><button class="primary" id="pf-save">保存档案</button>
+      <span class="muted">模型以当年官方招生目录为准;此处仅是决策输入</span></div></div>`;
+  /* --- 月度模拟成绩(真实成绩录入) --- */
+  const rows = mock.items || [];
+  html += `<div class="card"><h2>📊 月度模拟成绩(决策模型只用真实成绩)</h2>
+    <div class="toolbar" style="flex-wrap:wrap;gap:8px">
+      <select id="ms-sub">${["math", "cs408", "english", "politics"].map(s => `<option value="${s}">${SUBJECTS[s]}</option>`).join("")}</select>
+      <input id="ms-month" placeholder="2026-10" style="width:100px">
+      <input id="ms-score" type="number" placeholder="分数" style="width:90px">
+      <input id="ms-paper" placeholder="试卷名(选填)" style="width:160px">
+      <button class="primary" id="ms-add">录入</button></div>
+    ${rows.length ? `<table style="width:100%;font-size:13.5px"><tr>
+        <th>月份</th><th>科目</th><th>成绩/满分</th><th>试卷</th><th></th></tr>
+      ${rows.map(r => `<tr><td>${esc(r.month)}</td><td>${SUBJECTS[r.subject] || r.subject}</td>
+        <td><b>${r.score}</b>/${r.full_mark}</td><td class="muted">${esc(r.paper || "")}</td>
+        <td><button data-del="${r.id}" class="btn" style="padding:2px 8px">删</button></td></tr>`).join("")}
+      </table>` : '<div class="muted" style="padding:10px 0">还没有模拟成绩。择校概率模型需要 ≥2 科的月度真实模拟成绩,系统不会用主观评价代替。</div>'}</div>`;
+  html += `<div class="infobox">成绩趋势与录取概率见 <a href="#decision">智能择校 →</a></div>`;
   if (prof.stage) html += `<div class="infobox">当前阶段:<b>${esc(prof.stage)}</b>${prof.days_left != null ? " · 距考试 " + prof.days_left + " 天" : ""}</div>`;
   html += '<div class="row3">';
   for (const [sub, s] of Object.entries(prof.subjects)) {
@@ -2324,6 +2371,30 @@ ROUTES.profile = async () => {
     html += '<div class="hintbox"><b>数据缺口(补上这些,画像会更准):</b><br>' + prof.data_gaps.map(g => "· " + esc(g)).join("<br>") + "</div>";
   $("#view").innerHTML = html;
   typeset($("#view"));
+  // 档案与模拟成绩交互
+  $("#pf-save").onclick = async () => {
+    try {
+      await api("/persona", { method: "PUT", body: JSON.stringify({
+        exam_year: +$("#pf-year").value,
+        bachelor_school: $("#pf-school").value, bachelor_major: $("#pf-major").value,
+        plan: $("#pf-plan").value, english: $("#pf-eng").value,
+        target_region: $("#pf-region").value,
+        directions: $("#pf-dirs").value.split(",").map(s => s.trim()).filter(Boolean) }) });
+      toast("档案已保存"); ROUTES.profile();
+    } catch (e) { toast(e.message, "err"); }
+  };
+  $("#ms-add").onclick = async () => {
+    try {
+      await api("/mock-scores", { method: "POST", body: JSON.stringify({
+        subject: $("#ms-sub").value, month: $("#ms-month").value.trim(),
+        score: $("#ms-score").value, paper: $("#ms-paper").value }) });
+      toast("已录入"); ROUTES.profile();
+    } catch (e) { toast(e.message, "err"); }
+  };
+  $$("button[data-del]").forEach(b => b.onclick = async () => {
+    try { await api("/mock-scores/" + b.dataset.del, { method: "DELETE" }); ROUTES.profile(); }
+    catch (e) { toast(e.message, "err"); }
+  });
 };
 
 function weekTrend(trend) {
@@ -2349,6 +2420,73 @@ function trendChart(trend) {
   });
   return `<svg class="bar-chart" width="${W}" height="${H}" role="img">${bars}${labels}</svg>`;
 }
+
+/* ================= 智能择校(V2.0) ================= */
+const TIER_TAG = { 冲刺: "red", 目标: "amber", 稳妥: "green", 保底: "gray" };
+let decisionOpen = null;
+
+ROUTES.decision = async () => {
+  const [rec, persona] = await Promise.all([api("/decision/recommend"), api("/persona")]);
+  let html = `<div class="page-head"><div>
+    <div class="section-label">DECISION · 智能择校</div><h1>智能择校与录取评估</h1></div></div>
+  <div class="infobox">${esc(rec.note)}。目标年份 <b>${persona.exam_year || 2028}</b>;
+    概率模型只用官方历年数据与你的真实模拟成绩,数据不足时明确显示"预测不可靠"。</div>
+  <div class="toolbar" style="margin:12px 0"><a class="btn" href="#profile">填写档案 / 录入模拟成绩 →</a>
+    <a class="btn" href="#intel/schools">维护官方招生数据 →</a></div>
+  <div id="dec-list">${rec.items.map((e, i) => {
+    const m = e.match || {};
+    return `<div class="card" style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <b>${esc(e.name)}</b>
+        <span>${e.tier ? `<span class="tag ${TIER_TAG[e.tier] || "gray"}">${e.tier}</span>` : '<span class="tag gray">未分层</span>'}
+        <span class="score-pill" title="${esc((m.items || []).map(x => x.item + ":" + (x.points ?? "—")).join("; "))}">${m.score ?? "—"}<small>/100 匹配度</small></span></span></div>
+      <div class="muted" style="font-size:12.5px;margin:4px 0">${esc(e.region || "")} · ${e.uses_408 === true ? "考408" : e.uses_408 === false ? "不考408" : "初试科目未公开"}
+        ${Object.keys(e.line_years || {}).length ? " · 复试线 " + Object.entries(e.line_years).map(([y, v]) => y + ":" + v).join(" / ") : " · 官方复试线未采集"}</div>
+      <div class="muted" style="font-size:12.5px">${esc(e.tier_note)}</div>
+      <div class="hot-actions" style="margin-top:8px">
+        <button data-p="${e.uni_id}" class="btn">📈 录取概率评估</button>
+        <button data-m="${i}" class="btn">匹配度明细</button></div>
+      <div id="pd-${e.uni_id}"></div>
+      <div id="md-${i}" class="muted" style="font-size:12.5px;margin-top:6px;display:none">
+        ${(m.items || []).map(x => `· ${esc(x.item)}:${x.points == null ? "无法评分" : x.points + " 分"} —— ${esc(x.why)}`).join("<br>")}</div>
+    </div>`;
+  }).join("")}</div>`;
+  $("#view").innerHTML = html;
+  typeset($("#view"));
+  $$("button[data-m]").forEach(b => b.onclick = () => {
+    const el = $("#md-" + b.dataset.m);
+    el.style.display = el.style.display === "none" ? "block" : "none";
+  });
+  $$("button[data-p]").forEach(b => b.onclick = async () => {
+    const box = $("#pd-" + b.dataset.p);
+    if (decisionOpen === b.dataset.p) { box.innerHTML = ""; decisionOpen = null; return; }
+    decisionOpen = b.dataset.p;
+    box.innerHTML = '<span class="muted">模型计算中…</span>';
+    const d = await api("/decision/probability/" + b.dataset.p);
+    if (!d.ok) { box.innerHTML = `<div class="muted">${esc(d.error || "计算失败")}</div>`; return; }
+    if (!d.reliable) {
+      box.innerHTML = `<div class="infobox" style="border-left:3px solid var(--amber)">
+        <b>预测不可靠</b> —— 系统不会编造概率。原因:<br>
+        ${d.reasons.map(r => "· " + esc(r)).join("<br>")}
+        <br><span class="muted">已覆盖数据:${(d.data_coverage.line_years || []).join("年,") || "无"}${d.data_coverage.mock_subjects ? " · 模拟科目 " + d.data_coverage.mock_subjects + " 科" : ""}</span></div>`;
+      return;
+    }
+    box.innerHTML = `<div class="infobox" style="border-left:3px solid var(--gold)">
+      <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:15px">
+        <span>进入复试 <b>${Math.round(d.p_pass_line * 100)}%</b></span>
+        <span>复试通过(假设) <b>${Math.round(d.p_final_given_pass * 100)}%</b></span>
+        <span>最终录取 <b class="h1-accent">${Math.round(d.p_final * 100)}%</b></span>
+        <span>置信度 <b>${esc(d.confidence)}</b></span></div>
+      <div style="margin-top:6px">成绩估计 ${d.score_estimate.total}±${d.score_estimate.sigma}
+        (基于 ${d.score_estimate.based_on_subjects} 科真实模拟) · ${esc(d.targets.suggest)}</div>
+      <div style="margin-top:6px">三情景录取概率:${Object.entries(d.scenario_probability).map(([k, v]) => k + " " + Math.round(v * 100) + "%").join(" · ")}</div>
+      <details style="margin-top:6px"><summary class="muted" style="cursor:pointer">模型假设与数据覆盖</summary>
+        <div class="muted" style="font-size:12.5px;margin-top:4px">
+          数据覆盖:复试线年份 ${(d.data_coverage.line_years || []).join("、")};模拟成绩 ${d.data_coverage.mock_count} 条<br>
+          ${d.assumptions.map(a => "· " + esc(a)).join("<br>")}
+          <br>${esc(d.note)}</div></details></div>`;
+  });
+};
 
 /* ================= 个人中心 ================= */
 ROUTES.account = async () => {

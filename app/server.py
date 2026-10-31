@@ -1791,17 +1791,27 @@ def create_app(data_dir=None, backup_dir=None):
         bucket = args.get("bucket", "all")
         if bucket in ("7", "30", "90"):
             items = _radar_bucket(items, int(bucket))
+        elif bucket == "annual":
+            items = _radar_bucket(items, 365)
         if args.get("ctype"):
             items = [i for i in items if i.get("ctype") == args["ctype"]]
+        if args.get("category"):
+            items = [i for i in items if i.get("category") == args["category"]]
         if args.get("subject"):
             items = [i for i in items if i.get("subject") == args["subject"]]
         if args.get("favorite") == "1":
             items = [i for i in items if i.get("favorite")]
-        items.sort(key=lambda i: (-(i.get("score") or {}).get("total", 0),
-                                  i.get("fetched_at") or ""), reverse=False)
+        def _pub_key(i):
+            sc = (i.get("score") or {}).get("total")
+            return (i.get("published_at") or "0000", -(sc or 0))
+        items.sort(key=_pub_key)
+        items.reverse()
         state = store.load("radar_state") or {}
+        for i in items:
+            i["source_level"] = TRUST.radar_level(i)
         return jsonify({"items": items[:200], "total": len(items),
-                        "ctypes": RADAR.CTYPES,
+                        "ctypes": RADAR.CTYPES, "categories": RADAR.CATEGORY_NAMES,
+                        "levels": TRUST.LEVEL_LABELS,
                         "status": {"last_success": state.get("last_success"),
                                    "last_attempt": state.get("last_attempt"),
                                    "last_stats": state.get("last_stats"),
@@ -1882,7 +1892,9 @@ def create_app(data_dir=None, backup_dir=None):
             "published_at": pub, "fetched_at": now_iso, "verified_at": None,
             "verify_status": "user_submitted",
             "subject": RADAR.detect_subject(title + " " + cand["snippet"]),
-            "tags": [], "stage": "通用", "ctype": ctype, "marketing_hits": hits,
+            "tags": [], "stage": "通用", "ctype": ctype,
+            "category": RADAR.classify_category(ctype, title, cand["snippet"]),
+            "marketing_hits": hits,
             "heat": None, "score": None, "recommend_reason": "", "action_advice": "",
             "shown": False, "favorite": bool(body.get("favorite")),
             "hidden": False,
@@ -2033,6 +2045,189 @@ def create_app(data_dir=None, backup_dir=None):
         if cfg.get("auto_refresh") and not os.environ.get("PYTEST_CURRENT_TEST"):
             RADAR.ensure_auto_thread(store)
         return jsonify({"ok": True, "radar": cfg})
+
+    # ---------- V2.0 决策与情报中心 ----------
+    from . import decision as DEC
+    from . import trust as TRUST
+
+    @app.get("/api/persona")
+    def persona_get():
+        return jsonify(DEC.persona_snapshot(store))
+
+    @app.put("/api/persona")
+    def persona_put():
+        body = request.get_json(force=True, silent=True) or {}
+        cur = store.load("persona") or {}
+        for f in ("exam_year", "directions", "plan", "math", "english",
+                  "major_course", "bachelor_major", "bachelor_school",
+                  "target_region", "note"):
+            if f in body:
+                cur[f] = body[f]
+        if "exam_year" in body:
+            try:
+                y = int(body["exam_year"])
+            except (TypeError, ValueError):
+                return _bad("考研年份须为数字")
+            if not 2026 <= y <= 2030:
+                return _bad("考研年份范围 2026-2030")
+            cur["exam_year"] = y
+        if "directions" in body:
+            if not isinstance(body["directions"], list) or \
+                    not all(isinstance(x, str) for x in body["directions"]):
+                return _bad("directions 须为字符串列表")
+            cur["directions"] = [x.strip() for x in body["directions"] if x.strip()][:6]
+        cur["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        store.save("persona", cur)
+        return jsonify(DEC.persona_snapshot(store))
+
+    @app.get("/api/mock-scores")
+    def mock_list():
+        rows = sorted(store.load("mock_scores"), key=lambda r: r.get("month") or "")
+        return jsonify({"items": rows,
+                        "summary": DEC.mock_summary(store,
+                                                    DEC.persona_snapshot(store).get("exam_year"))})
+
+    @app.post("/api/mock-scores")
+    def mock_add():
+        body = request.get_json(force=True, silent=True) or {}
+        sub = body.get("subject")
+        if sub not in SUBJECTS:
+            return _bad("subject 必须是 %s" % (SUBJECTS,))
+        month = str(body.get("month") or "")
+        try:
+            datetime.datetime.strptime(month, "%Y-%m")
+        except ValueError:
+            return _bad("month 格式应为 YYYY-MM(按月记录模拟成绩)")
+        try:
+            score = float(body.get("score"))
+        except (TypeError, ValueError):
+            return _bad("score 须为数字(真实模拟成绩,不接受主观评级)")
+        fm = body.get("full_mark") or DEC.FULL_MARKS[sub]
+        if not 0 <= score <= fm:
+            return _bad("score 应在 0-%s 之间" % fm)
+        items = store.load("mock_scores")
+        item = {"id": _next_id(items, "mk-sc"), "month": month, "subject": sub,
+                "score": score, "full_mark": fm,
+                "paper": (body.get("paper") or "")[:60],
+                "note": (body.get("note") or "")[:200],
+                "created": datetime.datetime.now().isoformat(timespec="seconds")}
+        items.append(item)
+        store.save("mock_scores", items)
+        return jsonify(item), 201
+
+    @app.delete("/api/mock-scores/<mid>")
+    def mock_del(mid):
+        items = store.load("mock_scores")
+        remain = [m for m in items if m["id"] != mid]
+        if len(remain) == len(items):
+            return _bad("记录不存在", 404)
+        store.save("mock_scores", remain)
+        return jsonify({"deleted": mid})
+
+    @app.get("/api/decision/recommend")
+    def decision_recommend():
+        return jsonify(DEC.recommend(store))
+
+    @app.get("/api/decision/probability/<uid>")
+    def decision_probability(uid):
+        return jsonify(DEC.probability(store, uid))
+
+    @app.get("/api/admission/records")
+    def admission_list():
+        uni_id = request.args.get("uni_id")
+        year = request.args.get("year")
+        items = store.load("admission_records")
+        if uni_id:
+            items = [r for r in items if r["uni_id"] == uni_id]
+        if year:
+            items = [r for r in items if str(r.get("year")) == str(year)]
+        return jsonify({"items": items, "total": len(items),
+                        "changes": len(store.load("admission_changes"))})
+
+    @app.put("/api/admission/records/<rid>")
+    def admission_update(rid):
+        """官方招生数据录入:事实字段必须同年份+来源(官方优先),否则拒绝。"""
+        body = request.get_json(force=True, silent=True) or {}
+        items = store.load("admission_records")
+        for r in items:
+            if r["id"] != rid:
+                continue
+            FACT = ("major_code", "major_name", "plan_total", "tuimian",
+                    "tongkao", "exam_subjects", "uses_408", "retest_subjects",
+                    "retest_line", "single_lines", "retest_list_url",
+                    "admitted_list_url", "score_distribution_url",
+                    "tutors_url", "announcement_url")
+            changed = []
+            for f in FACT:
+                if f in body and body[f] != r.get(f):
+                    old = r.get(f)
+                    r[f] = body[f]
+                    if old not in (None, "", [], {}) or body[f] not in (None, "", [], {}):
+                        changed.append({"field": f, "old": old, "new": body[f]})
+            if "source_name" in body:
+                r["source_name"] = body["source_name"]
+            if "source_url" in body:
+                su = (body["source_url"] or "").strip()
+                if su and not su.startswith(("http://", "https://")):
+                    return _bad("来源链接必须以 http(s):// 开头")
+                r["source_url"] = su
+            # 事实字段变化时强制来源(可追溯红线)
+            if changed and not (r.get("source_url") or r.get("source_name")):
+                return _bad("填写官方招生数据必须同时提供来源(来源名称或链接)")
+            r["collected_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+            r["updated_at"] = r["collected_at"]
+            r["data_status"] = ("已核验" if body.get("mark_verified")
+                                else "已录入·待核验" if changed else r.get("data_status"))
+            r["verified_at"] = (datetime.datetime.now().isoformat(timespec="seconds")
+                                if body.get("mark_verified") else r.get("verified_at"))
+            r["source_level"] = "S" if (r.get("verified_at") and
+                                        (r.get("source_url") or r.get("source_name"))) else \
+                ("B" if (r.get("source_url") or r.get("source_name")) else None)
+            if body.get("mark_verified") is not None:
+                r["data_status"] = body.get("data_status") or r["data_status"]
+            if changed:
+                chs = store.load("admission_changes")
+                chs.append({"id": "ac-%d" % (len(chs) + 1), "record_id": rid,
+                            "uni_name": r["uni_name"], "year": r["year"],
+                            "changes": changed,
+                            "source_name": r.get("source_name"),
+                            "source_url": r.get("source_url"),
+                            "at": r["collected_at"]})
+                store.save("admission_changes", chs)
+            store.save("admission_records", items)
+            return jsonify(r)
+        return _bad("分档记录不存在", 404)
+
+    @app.get("/api/admission/changes")
+    def admission_changes():
+        return jsonify(sorted(store.load("admission_changes"),
+                              key=lambda c: c.get("at") or "", reverse=True)[:100])
+
+    @app.get("/api/datasources")
+    def datasource_status():
+        """数据源健康度:各通道最近一轮结果汇总(真实统计,非装饰)。"""
+        state = store.load("radar_state") or {}
+        last = state.get("last_stats") or {}
+        channels = {}
+        for q in last.get("queries") or []:
+            name = q["q"].split(":")[0] if ":" in q["q"] else q["q"]
+            c = channels.setdefault(name, {"ok": 0, "fail": 0, "last_err": None})
+            if q.get("ok"):
+                c["ok"] += 1
+            else:
+                c["fail"] += 1
+                c["last_err"] = q.get("err")
+        items = []
+        for name, c in channels.items():
+            total = c["ok"] + c["fail"]
+            items.append({"channel": name, "queries": total,
+                          "success_rate": round(100 * c["ok"] / total) if total else 0,
+                          "last_error": c["last_err"]})
+        return jsonify({"last_success": state.get("last_success"),
+                        "last_attempt": state.get("last_attempt"),
+                        "failure_reason": state.get("failure_reason"),
+                        "channels": items,
+                        "principles": "仅官方接口与合法公开信息;不绕过登录/验证码/反爬;"})
 
     # ---------- 成长时间线 ----------
     @app.get("/api/growth/timeline")

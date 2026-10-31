@@ -34,6 +34,10 @@ COLLECTIONS = {
     "experience_posts": list,
     "radar": list,
     "radar_state": dict,
+    "admission_records": list,
+    "admission_changes": list,
+    "persona": dict,
+    "mock_scores": list,
 }
 
 
